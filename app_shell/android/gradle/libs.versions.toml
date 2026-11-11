@@ -1,0 +1,15 @@
+# EchoFold Android 依赖版本目录。
+# 说明：AGP / Kotlin 插件版本在根级 settings.gradle.kts 的 plugins 块中统一声明（Gradle 不允许
+# settings 脚本读取版本目录），这里只负责依赖库版本，避免同一版本号出现两处。
+[versions]
+coroutines = "1.10.2"
+serializationJson = "1.9.0"
+junit = "5.13.4"
+junitPlatform = "1.13.4"
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serializationJson" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junitPlatform" }

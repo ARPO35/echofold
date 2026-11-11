@@ -1,0 +1,13 @@
+schema: spec-driven
+created: 2026-11-09
+goal: 构建 Flutter 界面、Android 本地 ASR、BYOK 文字加工与可追溯三级折叠的持续录音应用
+affected_areas:
+  - flutter-ui
+  - android-capture
+  - local-asr
+  - transcript-storage
+  - byok-processing
+  - semantic-reader
+  - privacy-export
+  - observability
+x-status: docs-validated-pre-registration-pending

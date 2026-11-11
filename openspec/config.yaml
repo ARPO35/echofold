@@ -1,0 +1,17 @@
+schema: spec-driven
+
+context: |
+  Language: zh-CN
+  All artifacts must be written in zh-CN.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Project: 声叠（EchoFold），Flutter + Android 原生音频链路的本地实时转写与三级语义折叠。
+  ASR 仅本地运行，首选并待验证 X-ASR 480ms 单模型；精确工件、INT8 来源和哈希须固定，模型不得打入 APK。
+  ASR 待识别音频落后超过 15 秒时插入不可变 GAP 并用居中 ... 展示，跳到最新音频；所有文本段和 GAP 可用会话固定模型离线重识别，成功新增版本且不覆盖原证据。
+  数据产物保存有序 sourceFinalIds/sourceVersions 与 sourceSetHash；UTC、单调采集时间和实际音频 offset 分域。
+  LLM 仅通过手机直连 OpenAI-compatible BYOK，默认 HTTPS，不上传音频，不自建中继。
+  原始 ASR/GAP、时间戳与长期分块音频是不可变证据；用户编辑、AI 产物和重识别必须版本化并携带引用。
+  音频默认 AAC-LC/M4A 单声道目标 192kbps、60 秒分块，新块先原子占位再初始化编码器，空间不足永不自动删除。
+  所有音频、ASR、持久化队列有界；正常录制音频零静默丢失；ASR 跳读只跳过识别副本。
+  新内容显示、音频持久化和实时 ASR 优先于 LLM；预处理与视觉折叠解耦。
+  不实现隐蔽录音、绕过系统指示或无条件开机自动录音。
+  所有性能与准确率数字是待预注册和实测的验收目标，不得描述为已有结果；语义正确性不得为速度让步。

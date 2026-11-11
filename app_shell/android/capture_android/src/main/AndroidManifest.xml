@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  采集模块清单。
+  - 麦克风前台服务：必须声明 FOREGROUND_SERVICE 与（Android 14 起）FOREGROUND_SERVICE_MICROPHONE，
+    service 元素声明 foregroundServiceType="microphone"，只在用户显式开始录音后启动。
+  - POST_NOTIFICATIONS 用于常驻录音通知（Android 13 起需运行时授权）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <service
+            android:name="com.echofold.capture.service.RecordingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:stopWithTask="false" />
+    </application>
+
+</manifest>
