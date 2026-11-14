@@ -208,3 +208,11 @@ No issues found!
 最终定点修订后执行 `:app:assembleDebug :capture_android:testDebugUnitTest :app:lintDebug :capture_android:lintDebug`（同一临时镜像与 JDK/SDK）返回 `BUILD SUCCESSFUL in 1m 37s`，394 tasks（197 executed / 197 up-to-date）。最终 APK 为 202847480 字节，已通过 ADB push 到设备 `/sdcard/Download/EchoFold-debug.apk`，并发出打开系统下载列表的 Intent。配置事前备份在差异核对、构建和 lint 通过后已清理。
 
 手机尚未确认更新安装时的截图为全黑；随后用户手动完成更新安装（22:02:57），真机验证结果见上方"2026-11-14 录音采集真机验证"一节。
+
+### 2026-11-14 连续振幅曲线与逐帧移动
+
+用户指出逐点胶囊条不符合预期，要求归一化后连接前后采样点、曲线插值，并尽量按屏幕刷新率移动。本轮将绘制改为固定 −60～0dBFS 归一化的连续对称包络，三次 Bézier 控制点限制在段端点范围内，避免插值过冲；不把 RMS/peak 伪装成带正负相位的原始 PCM。保留真实音频时间轴和批量投递，Flutter vsync 驱动画布平移，缓存路径不逐帧重算；暂停、后台、TickerMode 关闭、减少动态效果或断流追到最后真实样本时停止持续刷新。
+
+实际验证：Flutter analyzer 输出 `No issues found!`；曲线几何 8 项通过，动画与录音页面 17 项通过，包含 100Hz/120Hz 帧间隔像素向左变化、批次间不回跳、暂停冻结、恢复不计暂停墙钟、后台/TickerMode、减少动态效果及断流停止。首轮像素测试因图像读取留在 fake async 中等待而中断，改为 `tester.runAsync` 后上述 17 项全部通过。未执行无关 Core/Android 单元测试或全仓门禁。
+
+profile 构建首次离线失败于未缓存的 profile embedding/AndroidX 依赖，随后使用既有单次 Maven 镜像联网构建通过（25s），定点修复 analyzer 提示后最终离线 `:app:assembleProfile -Ptarget-platform=android-arm64` 通过（19s）。用户报告 USB 安装已恢复可用，实际 `adb install -r app-profile.apk` 返回 `Success`，冷启动返回 `Status: ok`、`TotalTime: 767`。已在设备录音页面实际查看，用户反馈“我看了，效果可以”。设备支持 60/120Hz，但本轮没有取得稳定 120fps 的 profile 帧耗时/提交间隔测量；vsync 驱动与像素测试不等于真机跑满 120Hz，不能宣称该性能指标已通过。没有修改全局配置、手机安全策略或安装新软件；TASK-01/TASK-04 整体状态保持未验收。

@@ -185,6 +185,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
                     child: Stack(alignment: Alignment.center, children: <Widget>[
                       Positioned(left: 0, right: buttonSize + 12, child: IgnorePointer(
                         child: AmplitudeStrip(
+                          key: ValueKey<String?>(state.sessionId),
                           amplitudes: state.amplitudes,
                           frozen: widget.controller.waveformFrozen,
                           height: 72,
