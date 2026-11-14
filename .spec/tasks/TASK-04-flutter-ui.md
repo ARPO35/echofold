@@ -39,4 +39,4 @@ size: M
 
 ### 当前本地证据
 
-Flutter analyzer 已输出 `No issues found!`，48 项 Flutter 测试通过（录音控制器/widget 新增 18 项）。Android 镜像构建及 JVM 单测一轮通过，采集 88 项、Core 202 项，均无失败或跳过；最终可空处理/线程测试清理后的重建、Android lint 和手机上的真实界面/文件验证须以[验证报告](../../docs/validation-report.md)追加结果为准。不能用测试 fake 的平台状态推断手机已录到音频，也不据此勾选 §4 或本任务整体验收。
+Flutter analyzer 已输出 `No issues found!`，48 项 Flutter 测试通过（录音控制器/widget 新增 18 项）。Android 镜像构建及 JVM 单测一轮通过，采集 88 项、Core 202 项；定点修订后重建 + lint 通过。2026-11-14 真机（nubia Z50 Ultra，Android 14）验证通过：前台服务麦克风类型、60 秒分块边界、暂停冻结、左滑保存、后台持续采集、6 个 M4A 块全部解码正常且时长对账一致，详见[验证报告](../../docs/validation-report.md)"2026-11-14 录音采集真机验证"。遗留：空闲态时长残留显示、首块峰值超 0dBFS 待观察。不能用测试 fake 的平台状态推断手机已录到音频，也不据此勾选 §4 或本任务整体验收。
