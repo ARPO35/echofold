@@ -19,7 +19,7 @@ class MainActivity : FlutterActivity() {
     private var visible = false
     private var permissionResult: MethodChannel.Result? = null
     private var sessionListener: ((Map<String, Any?>) -> Unit)? = null
-    private var amplitudeListener: ((Map<String, Any?>) -> Unit)? = null
+    private var amplitudeListener: ((List<Map<String, Any?>>) -> Unit)? = null
 
     override fun onResume() { super.onResume(); visible = true; sessionListener?.invoke(RecordingBridge.snapshot) }
     override fun onPause() { visible = false; super.onPause() }
@@ -40,7 +40,8 @@ class MainActivity : FlutterActivity() {
         })
         EventChannel(messenger, "com.echofold.app/amplitude_events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
-                amplitudeListener = { events.success(it) }; RecordingBridge.amplitudeListener = amplitudeListener
+                amplitudeListener = { batch: List<Map<String, Any?>> -> events.success(batch) }
+                RecordingBridge.amplitudeListener = amplitudeListener
             }
             override fun onCancel(arguments: Any?) {
                 if (RecordingBridge.amplitudeListener === amplitudeListener) RecordingBridge.amplitudeListener = null

@@ -234,27 +234,40 @@ final class RecordingController extends ChangeNotifier {
     _sequence = sequence;
   }
 
+  /// 处理原生批量振幅事件：一次 tick 可能携带多个按序样本。
+  ///
+  /// 批内任一样本有效即应用该批；顺序由原生保证（同队列按序排空），
+  /// 批内样本按 `capturedEndMs` 升序进入状态。
   void _receiveAmplitude(Object? payload) {
-    if (_disposed || waveformFrozen || payload is! Map ||
-        payload['sessionId'] != _snapshot.sessionId || _snapshot.sessionId == null) {
-      return;
+    if (_disposed || waveformFrozen || _snapshot.sessionId == null) return;
+    final List<Object?>? batch = switch (payload) {
+      Map single => <Object?>[single],
+      List batch => batch,
+      _ => null,
+    };
+    if (batch == null || batch.isEmpty) return;
+    final List<AmplitudePoint> accepted = <AmplitudePoint>[];
+    for (final Object? item in batch) {
+      if (item is! Map || item['sessionId'] != _snapshot.sessionId) continue;
+      final Object? mono = item['monoNs'];
+      final Object? captured = item['capturedEndMs'];
+      final Object? rms = item['rms'];
+      final Object? peak = item['peak'];
+      if (mono is! int || mono <= _lastMonoNs || captured is! int || captured < 0 ||
+          rms is! num || peak is! num || !rms.isFinite || !peak.isFinite ||
+          (_snapshot.amplitudes.isNotEmpty &&
+              captured < _snapshot.amplitudes.last.capturedEndMs)) {
+        continue;
+      }
+      _lastMonoNs = mono;
+      accepted.add(AmplitudePoint(monoNs: mono, capturedEndMs: captured,
+          rms: rms.toDouble(), peak: peak.toDouble()));
     }
-    final Object? mono = payload['monoNs'];
-    final Object? captured = payload['capturedEndMs'];
-    final Object? rms = payload['rms'];
-    final Object? peak = payload['peak'];
-    if (mono is! int || mono <= _lastMonoNs || captured is! int || captured < 0 ||
-        rms is! num || peak is! num || !rms.isFinite || !peak.isFinite ||
-        (_snapshot.amplitudes.isNotEmpty &&
-            captured < _snapshot.amplitudes.last.capturedEndMs)) {
-      return;
-    }
-    _lastMonoNs = mono;
+    if (accepted.isEmpty) return;
+    final int windowMs = accepted.last.capturedEndMs - 8000;
     final List<AmplitudePoint> points = <AmplitudePoint>[
-      ..._snapshot.amplitudes.where((AmplitudePoint p) =>
-          p.capturedEndMs >= captured - 8000),
-      AmplitudePoint(monoNs: mono, capturedEndMs: captured,
-          rms: rms.toDouble(), peak: peak.toDouble()),
+      ..._snapshot.amplitudes.where((AmplitudePoint p) => p.capturedEndMs >= windowMs),
+      ...accepted,
     ];
     const int capacity = 400;
     if (points.length > capacity) points.removeRange(0, points.length - capacity);

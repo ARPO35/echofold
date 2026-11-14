@@ -40,11 +40,16 @@ final class FakeRecordingPlatform implements RecordingPlatform {
     sessionEvents.add(snapshot);
   }
 
+  /// 单条便捷方法；[pushAmplitudes] 直接模拟原生批量事件。
   void amplitude(int monoNs, int capturedMs, {String sessionId = 'session-1'}) {
-    amplitudeEvents.add(<String, Object?>{
-      'sessionId': sessionId, 'monoNs': monoNs, 'capturedEndMs': capturedMs,
-      'rms': 0.3, 'peak': 0.6,
-    });
+    pushAmplitudes(<Map<String, Object?>>[
+      <String, Object?>{'sessionId': sessionId, 'monoNs': monoNs, 'capturedEndMs': capturedMs, 'rms': 0.3, 'peak': 0.6},
+    ]);
+  }
+
+  /// 模拟原生一次 tick 的批量事件。
+  void pushAmplitudes(List<Map<String, Object?>> batch) {
+    amplitudeEvents.add(batch);
   }
 
   @override

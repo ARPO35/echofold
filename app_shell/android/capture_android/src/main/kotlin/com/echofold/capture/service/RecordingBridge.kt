@@ -3,10 +3,13 @@ package com.echofold.capture.service
 import android.os.Handler
 import android.os.Looper
 import com.echofold.capture.pcm.AmplitudeSample
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.ConcurrentLinkedQueue
 
-/** 进程内桥只保存最新状态/振幅和有界命令结果，Activity 不持有采集资源。 */
+/** 进程内桥只保存最新状态、有界振幅队列和命令结果，Activity 不持有采集资源。 */
 object RecordingBridge {
+    /** 投递队列上限；溢出丢最旧样本并计数，避免 UI 卡顿时无限积压。 */
+    private const val AMPLITUDE_QUEUE_CAPACITY = 512
+
     private val main = Handler(Looper.getMainLooper())
     private var sequence = 0L
     @Volatile var snapshot: Map<String, Any?> = mapOf(
@@ -16,8 +19,11 @@ object RecordingBridge {
     )
         private set
     var sessionListener: ((Map<String, Any?>) -> Unit)? = null
-    var amplitudeListener: ((Map<String, Any?>) -> Unit)? = null
-    private val amplitude = AtomicReference<Map<String, Any?>?>(null)
+    var amplitudeListener: ((List<Map<String, Any?>>) -> Unit)? = null
+    private val amplitudeQueue = ConcurrentLinkedQueue<Map<String, Any?>>()
+    /** 溢出丢弃的样本数；可观测，不静默丢音频证据（振幅只是展示流）。 */
+    @Volatile var droppedAmplitudes: Long = 0L
+        private set
     private val pending = LinkedHashMap<String, (Map<String, Any?>, String?, String?) -> Unit>()
     private data class Completed(val snapshot: Map<String, Any?>, val code: String?, val message: String?)
     private val completed = LinkedHashMap<String, Completed>()
@@ -48,15 +54,26 @@ object RecordingBridge {
     }
 
     fun offerAmplitude(sessionId: String, value: AmplitudeSample) {
-        amplitude.set(mapOf("sessionId" to sessionId, "monoNs" to value.monoNs,
-            "capturedEndMs" to value.capturedEndMs, "rms" to value.rms, "peak" to value.peak))
+        val payload = mapOf("sessionId" to sessionId, "monoNs" to value.monoNs,
+            "capturedEndMs" to value.capturedEndMs, "rms" to value.rms, "peak" to value.peak)
+        amplitudeQueue.add(payload)
+        while (amplitudeQueue.size > AMPLITUDE_QUEUE_CAPACITY) {
+            amplitudeQueue.poll()
+            droppedAmplitudes++
+        }
     }
 
     /** 仅由服务主线程的固定频率 ticker 调用，永不按 PCM 帧 post。 */
     fun deliver() {
         sessionListener?.invoke(snapshot)
-        amplitude.getAndSet(null)?.let { value ->
-            if (snapshot["status"] == "RECORDING" && value["sessionId"] == snapshot["sessionId"]) amplitudeListener?.invoke(value)
+        if (amplitudeQueue.isEmpty()) return
+        val drained = ArrayList<Map<String, Any?>>(amplitudeQueue.size)
+        while (true) {
+            val value = amplitudeQueue.poll() ?: break
+            if (snapshot["status"] == "RECORDING" && value["sessionId"] == snapshot["sessionId"]) {
+                drained.add(value)
+            }
         }
+        if (drained.isNotEmpty()) amplitudeListener?.invoke(drained)
     }
 }

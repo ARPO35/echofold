@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:echofold_app/app/app_contract.dart';
 import 'package:echofold_app/domain/models.dart';
 import 'package:echofold_app/native/platform_contracts.dart';
 import 'package:echofold_app/ui/recording/recording_controller.dart';
@@ -130,6 +131,35 @@ void main() {
     expect(controller.state.amplitudes, isEmpty);
     platform.amplitude(1, 100, sessionId: 'session-2');
     expect(controller.state.amplitudes, hasLength(1));
+  });
+
+  test('一次事件可携带批量样本，按序接受并整体去乱序', () async {
+    await controller.startOnlyRecording();
+    platform.pushAmplitudes(<Map<String, Object?>>[
+      for (int i = 1; i <= 5; i++)
+        <String, Object?>{'sessionId': 'session-1', 'monoNs': i, 'capturedEndMs': i * 100, 'rms': 0.3, 'peak': 0.6},
+    ]);
+    expect(controller.state.amplitudes, hasLength(5));
+    expect(controller.state.amplitudes.map((AmplitudePoint p) => p.capturedEndMs), [100, 200, 300, 400, 500]);
+    // 批内含乱序/外来样本：monoNs 乱序(99<=100)被拒、外来会话被拒、
+    // capturedEndMs 450<500 乱序也被拒——但 monoNs 200>100 有效，会被接受。
+    // 注意有效性以 monoNs 为主判据：captured 450 搭配 mono 200 是合法样本（原生保证同队列有序，
+    // captured 也随 mono 单调），此处模拟矛盾输入验证 captured 乱序防线。
+    platform.pushAmplitudes(<Map<String, Object?>>[
+      <String, Object?>{'sessionId': 'session-1', 'monoNs': 99, 'capturedEndMs': 450, 'rms': 0.1, 'peak': 0.2},
+      <String, Object?>{'sessionId': 'old', 'monoNs': 100, 'capturedEndMs': 600, 'rms': 0.1, 'peak': 0.2},
+      <String, Object?>{'sessionId': 'session-1', 'monoNs': 200, 'capturedEndMs': 500, 'rms': 0.1, 'peak': 0.2},
+    ]);
+    // mono 200 有效被接受（captured 500 恰与既有 500 并列，未乱序拒收）。
+    expect(controller.state.amplitudes.map((AmplitudePoint p) => p.capturedEndMs), [100, 200, 300, 400, 500, 500]);
+  });
+
+  test('capturedEndMs 乱序样本被拒收，窗口保持升序', () async {
+    await controller.startOnlyRecording();
+    platform.amplitude(1, 500);
+    platform.amplitude(2, 600);
+    platform.amplitude(3, 550);
+    expect(controller.state.amplitudes.map((AmplitudePoint p) => p.capturedEndMs), [500, 600]);
   });
 
   test('波形固定容量且只保留有效音频最近八秒', () async {
