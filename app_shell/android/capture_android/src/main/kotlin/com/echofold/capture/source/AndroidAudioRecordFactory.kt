@@ -94,7 +94,7 @@ private class AndroidAudioRecordHandle(
     }
 
     override fun read(destination: ShortArray, offset: Int, length: Int): Int =
-        record.read(destination, offset, length)
+        record.read(destination, offset, length, AudioRecord.READ_NON_BLOCKING)
 
     override fun stop() {
         if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {

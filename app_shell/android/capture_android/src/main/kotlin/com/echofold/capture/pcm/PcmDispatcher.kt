@@ -20,6 +20,17 @@ interface AsrSink : PcmLaneConsumer
 /** AAC 编码车道消费者；实现方把 PCM 写入分块编码器。 */
 interface EncoderSink : PcmLaneConsumer
 
+/** 编码车道生命周期；暂停/停止必须在所有已接受 PCM 排空后封存。 */
+interface LifecycleEncoderSink : EncoderSink {
+    val capturedMs: Long
+    val framesUntilBoundary: Long get() = Long.MAX_VALUE
+    fun prepareNextChunk() {}
+    fun start(sampleRate: Int)
+    fun pause()
+    fun resume()
+    fun stop()
+}
+
 /** 振幅车道消费者；实现方通常为 [AmplitudeSampler]。 */
 interface AmplitudeSink : PcmLaneConsumer
 
@@ -114,10 +125,18 @@ class PcmDispatcher(
 
     /** 当前分发状态；`BLOCKED` 表示必须停止读取新 PCM。 */
     val state: DispatchState get() = dispatchState
+    /** 唯一生产者读前检查容量，避免读出无法提交的 PCM。 */
+    fun hasCapacity(): Boolean = synchronized(lock) {
+        dispatchState != DispatchState.BLOCKED && lanes.all { it.depth < it.capacity }
+    }
 
     /** 已接受帧总数（每条车道相同）。 */
     val acceptedFrameCount: Long
         get() = synchronized(lock) { lanes.first().acceptedCount }
+    /** 最近一次消费者失败；调用方必须把它报告为 BLOCKED/失败。 */
+    @Volatile
+    var lastConsumerFailure: Throwable? = null
+        private set
 
     /**
      * 分发一帧 PCM。
@@ -199,6 +218,7 @@ class PcmDispatcher(
                 lane.sink.accept(frame)
                 consumed++
             } catch (error: Throwable) {
+                lastConsumerFailure = error
                 // 消费者异常不得伪装成成功消费：把该帧放回队首并进入 BLOCKED。
                 synchronized(lock) {
                     lane.frames.addFirst(frame)

@@ -44,6 +44,7 @@ class AudioRecordSource(
     val isOpen: Boolean
         get() = state != State.NEW && state != State.CLOSED
 
+    val failureOrNull: CaptureFailure? get() = if (state == State.FAULTED) lastFailure else null
     private var lastTimestampMonoNs: Long? = null
     private var resumeStateAfterBlock: State = State.RECORDING
 
@@ -189,7 +190,7 @@ class AudioRecordSource(
     /** 用户暂停：停止录音并冻结时间轴；重复调用安全。 */
     fun pause() {
         if (state != State.RECORDING) return
-        handle?.let { stopQuietly(it) }
+        handle?.stop()
         state = State.PAUSED
     }
 

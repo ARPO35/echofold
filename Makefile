@@ -30,7 +30,7 @@ endif
 	lint lint-flutter lint-android
 
 # 独立子目标便于 make -k 收集全部结果，任一失败仍会令总目标失败。
-# app 尚未依赖两个原生库，显式构建全部 Android 模块以覆盖工程编译。
+# app 依赖采集库；ASR 尚未接入应用，显式构建全部模块以覆盖工程编译。
 build: build-app build-capture build-asr
 
 build-app:

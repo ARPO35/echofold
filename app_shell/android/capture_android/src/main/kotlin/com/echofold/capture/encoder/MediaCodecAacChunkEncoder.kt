@@ -27,7 +27,7 @@ class MediaCodecCapabilitySource : EncoderCapabilitySource {
             } catch (_: IllegalArgumentException) {
                 continue
             }
-            val audio = caps.audioCapabilities
+            val audio = caps.audioCapabilities ?: continue
             val sampleRates = audio.supportedSampleRates.toSet()
             if (sampleRates.isEmpty()) continue
             val supportsAacLc = caps.profileLevels.any {
@@ -77,8 +77,8 @@ class MediaCodecAacEncoder : AudioEncoderCodec {
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, format.sampleRate / 4 * 2)
         }
         val created = MediaCodec.createEncoderByType(format.mimeType)
-        created.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec = created
+        created.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         requestedFormat = format
     }
 

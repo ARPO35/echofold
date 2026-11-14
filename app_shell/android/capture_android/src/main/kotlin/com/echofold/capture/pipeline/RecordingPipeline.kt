@@ -4,6 +4,8 @@ import com.echofold.capture.pcm.AmplitudeSampler
 import com.echofold.capture.pcm.AsrSink
 import com.echofold.capture.pcm.DispatchResult
 import com.echofold.capture.pcm.EncoderSink
+import com.echofold.capture.pcm.LifecycleEncoderSink
+import com.echofold.capture.source.AudioCaptureError
 import com.echofold.capture.pcm.LaneSubscription
 import com.echofold.capture.pcm.PcmDispatcher
 import com.echofold.capture.source.AndroidAudioRecordFactory
@@ -33,6 +35,7 @@ fun interface RecordingPipelineStateListener {
 interface RecordingPipeline {
     /** 分发布状态；`BLOCKED` 时 UI 必须显示保存异常。 */
     val dispatchState: DispatchState
+    val capturedMs: Long get() = 0L
 
     /** 打开麦克风并启动采集/消费线程；失败抛 [RecordingPipelineException]。 */
     fun start()
@@ -71,7 +74,7 @@ fun interface RecordingPipelineFactory {
  * ASR 车道需覆盖一次模型推理的排队，编码车道需覆盖一次文件写入抖动，振幅车道只需极短缓冲。
  */
 data class CaptureLanes(
-    val asr: AsrSink,
+    val asr: AsrSink?,
     val encoder: EncoderSink,
     val amplitude: AmplitudeSampler,
     val asrCapacityFrames: Int = DEFAULT_ASR_CAPACITY,
@@ -100,203 +103,171 @@ data class CaptureLanes(
     }
 }
 
-/**
- * 默认采集管线：一次 AudioRecord 读取 → [PcmDispatcher] 三条车道。
- *
- * 线程模型（全部守护线程）：
- * - `echofold-capture`：唯一读取 AudioRecord 的线程，只做读取、分发与振幅车道的内联消费；
- * - `echofold-asr` / `echofold-encoder`：各自 drain 自己的车道，慢推理不会阻塞采集线程；
- * - 任一车道拒绝 → 立即停止读取、设置 `source.block()`、`dispatchState = BLOCKED`，不丢已接受帧；
- * - 振幅车道采样成本固定（窗口 RMS），在采集线程内联消费，避免为它单独起线程。
- *
- * 本类只做设备绑定的编排，算法逻辑都在可 JVM 单测的类里。
- */
+/** 采集仅读取和入有界队列；ASR 与编码各自消费，暂停/停止先冻结读取再排空并封存。 */
 class DefaultRecordingPipeline(
     private val sessionId: String,
     private val audioConfig: AudioRecordConfig,
     private val sourceFactory: AudioRecordFactory,
     private val lanes: CaptureLanes,
 ) : RecordingPipeline {
-
-    @Volatile
-    private var running: Boolean = false
-
-    @Volatile
-    private var blocked: Boolean = false
-
-    /** 触发 BLOCKED 的车道 ID；供诊断与 UI 展示使用。 */
-    @Volatile
-    var lastBlockingLaneId: String? = null
-        private set
-
+    private val readLock = Any()
+    private val encoderControl = Any()
+    @Volatile private var running = false
+    @Volatile private var blocked = false
+    @Volatile private var paused = false
+    @Volatile private var failure: Throwable? = null
+    @Volatile private var listener: RecordingPipelineStateListener? = null
+    @Volatile private var acceptedFrames = 0L
+    @Volatile private var rotationPending = false
+    private var samplesUntilBoundary = Long.MAX_VALUE
     private var source: AudioRecordSource? = null
     private var dispatcher: PcmDispatcher? = null
     private var captureThread: Thread? = null
-    private var asrThread: Thread? = null
-    private var encoderThread: Thread? = null
+    private val consumers = ArrayList<Thread>(2)
+    private val buffer = ShortArray(lanes.readBufferFrames)
+    private val lifecycle get() = lanes.encoder as? LifecycleEncoderSink
+    override val capturedMs: Long get() = acceptedFrames * 1000L / (source?.sampleRate ?: actualSampleRate)
+    private var actualSampleRate = audioConfig.primarySampleRate
+    override val dispatchState: DispatchState get() = if (blocked || paused) DispatchState.BLOCKED else DispatchState.RUNNING
 
-    @Volatile
-    private var stateListener: RecordingPipelineStateListener? = null
-
-    private val readBuffer = ShortArray(lanes.readBufferFrames)
-
-    override val dispatchState: DispatchState
-        get() = if (blocked) DispatchState.BLOCKED else DispatchState.RUNNING
-
-    override fun setStateListener(listener: RecordingPipelineStateListener?) {
-        stateListener = listener
-    }
+    override fun setStateListener(listener: RecordingPipelineStateListener?) { this.listener = listener }
 
     override fun start() {
-        if (running) return
-        val capture = AudioRecordSource(factory = sourceFactory, config = audioConfig)
-        when (val opened = capture.open()) {
-            is SourceOpenResult.Failed -> throw RecordingPipelineException(
-                "打开麦克风失败：${opened.failure.error}",
-                opened.failure,
-            )
-
-            is SourceOpenResult.Opened -> Unit
-        }
-        val activeDispatcher = PcmDispatcher(
-            sessionId = sessionId,
-            sampleRate = capture.sampleRate,
-            subscriptions = listOf(
-                LaneSubscription(ASR_LANE, lanes.asrCapacityFrames, lanes.asr),
-                LaneSubscription(ENCODER_LANE, lanes.encoderCapacityFrames, lanes.encoder),
-                LaneSubscription(AMPLITUDE_LANE, lanes.amplitudeCapacityFrames, lanes.amplitude),
-            ),
-        )
+        check(source == null) { "采集管线已打开" }
+        val capture = AudioRecordSource(sourceFactory, audioConfig)
         source = capture
-        dispatcher = activeDispatcher
+        when (val opened = capture.open()) {
+            is SourceOpenResult.Failed -> throw RecordingPipelineException(opened.failure.message, opened.failure)
+            is SourceOpenResult.Opened -> { actualSampleRate = opened.sampleRate; lifecycle?.start(opened.sampleRate) }
+        }
+        samplesUntilBoundary = lifecycle?.framesUntilBoundary ?: Long.MAX_VALUE
+        val subscriptions = buildList {
+            lanes.asr?.let { add(LaneSubscription("asr", lanes.asrCapacityFrames, it)) }
+            add(LaneSubscription("encoder", lanes.encoderCapacityFrames, lanes.encoder))
+            add(LaneSubscription("amplitude", lanes.amplitudeCapacityFrames, lanes.amplitude))
+        }
+        dispatcher = PcmDispatcher(sessionId, capture.sampleRate, subscriptions)
         running = true
-        blocked = false
+        lanes.asr?.let { consumers += daemon("echofold-asr") { drainLoop("asr") } }
+        consumers += daemon("echofold-encoder") { drainLoop("encoder") }
+        captureThread = daemon("echofold-capture") { captureLoop() }
+    }
 
-        captureThread = daemon("echofold-capture") { captureLoop(capture, activeDispatcher) }
-        asrThread = daemon("echofold-asr") { drainLoop(activeDispatcher, ASR_LANE) }
-        encoderThread = daemon("echofold-encoder") { drainLoop(activeDispatcher, ENCODER_LANE) }
+    /** 读取为非阻塞；锁只保护当前 read+submit，不等待任何消费/文件操作。 */
+    private fun freeze() {
+        synchronized(readLock) { paused = true; source?.pause(); lanes.amplitude.pause() }
+    }
+
+    private fun drainAccepted() {
+        val dispatch = dispatcher ?: return
+        while (dispatch.totalDepth() > 0) {
+            dispatch.lastConsumerFailure?.let { throw it }
+            LockSupport.parkNanos(1_000_000L)
+        }
+        dispatch.lastConsumerFailure?.let { throw it }
     }
 
     override fun pause() {
-        lanes.amplitude.pause()
-        source?.pause()
+        freeze()
+        drainAccepted()
+        synchronized(encoderControl) { lifecycle?.pause() }
+        // 读取/背压失败仍保存全部已接受 PCM，但命令不能冒充正常暂停。
+        failure?.let { throw it }
     }
 
     override fun resume() {
-        lanes.amplitude.resume()
-        source?.resume()
+        check(!blocked) { "采集已失败，请先停止并检查保存文件" }
+        synchronized(encoderControl) { lifecycle?.resume() }
+        samplesUntilBoundary = lifecycle?.framesUntilBoundary ?: Long.MAX_VALUE
+        rotationPending = false
+        synchronized(readLock) {
+            source?.resume()
+            source?.failureOrNull?.let { throw RecordingPipelineException(it.message, it) }
+            lanes.amplitude.resume()
+            paused = false
+        }
     }
 
     override fun stopAndRelease() {
-        running = false
-        captureThread?.interrupt()
-        asrThread?.interrupt()
-        encoderThread?.interrupt()
-        listOfNotNull(captureThread, asrThread, encoderThread).forEach { thread ->
-            runCatching { thread.join(THREAD_JOIN_TIMEOUT_MS) }
-        }
-        captureThread = null
-        asrThread = null
-        encoderThread = null
-        source?.close()
-        source = null
-        dispatcher = null
-        blocked = false
-        lanes.amplitude.pause()
-    }
-
-    private fun captureLoop(capture: AudioRecordSource, activeDispatcher: PcmDispatcher) {
         try {
-            while (running) {
-                when (val result = capture.read(readBuffer)) {
-                    is FrameReadResult.Read -> {
-                        if (result.frames == 0) {
-                            LockSupport.parkNanos(IDLE_PARK_NANOS)
-                            continue
-                        }
-                        val outcome = activeDispatcher.submit(
-                            frameIndex = result.frameIndex,
-                            monoNs = result.firstMonoNs,
-                            capturedStartMs = result.capturedStartMs,
-                            samples = readBuffer,
-                            offset = 0,
-                            length = result.frames,
-                        )
-                        when (outcome) {
-                            is DispatchResult.Accepted -> {
-                                // 振幅车道成本固定，内联消费以降低波形延迟。
-                                activeDispatcher.drain(AMPLITUDE_LANE, 1)
-                            }
-
-                            is DispatchResult.Backpressured -> {
-                                haltForBackpressure(outcome.laneId)
-                                return
-                            }
-
-                            DispatchResult.Blocked -> {
-                                haltForBackpressure(activeDispatcher.blockingLaneId ?: AMPLITUDE_LANE)
-                                return
-                            }
-                        }
-                    }
-
-                    FrameReadResult.Paused, FrameReadResult.Blocked ->
-                        LockSupport.parkNanos(IDLE_PARK_NANOS)
-
-                    FrameReadResult.NotOpened -> {
-                        running = false
-                    }
-
-                    is FrameReadResult.Failed -> {
-                        running = false
-                        lanes.amplitude.pause()
-                        stateListener?.onStateChanged(DispatchState.BLOCKED, result.failure)
-                    }
-                }
-            }
-        } catch (interrupted: InterruptedException) {
-            Thread.currentThread().interrupt()
+            freeze()
+            drainAccepted()
+            synchronized(encoderControl) { lifecycle?.stop() }
+            // 已保存的是故障切点前的证据，仍返回原始采集失败并保留会话。
+            failure?.let { throw it }
+        } finally {
+            running = false
+            captureThread?.join()
+            consumers.forEach { it.join() }
+            source?.close()
+            source = null
         }
     }
 
-    private fun haltForBackpressure(laneId: String) {
-        running = false
-        blocked = true
-        source?.block()
-        // BLOCKED 时不产生新振幅样本（波形冻结）。
-        lanes.amplitude.pause()
-        stateListener?.onStateChanged(DispatchState.BLOCKED, null)
-        // 车道 ID 通过公开指标可查；这里只负责状态推进，诊断由 dispatcher.metricsOf(laneId) 提供。
-        lastBlockingLaneId = laneId
-    }
-
-    private fun drainLoop(activeDispatcher: PcmDispatcher, laneId: String) {
+    private fun captureLoop() {
         while (running) {
-            val delivered = activeDispatcher.drain(laneId, DRAIN_BATCH)
-            if (delivered == 0) {
-                if (activeDispatcher.state == DispatchState.BLOCKED && activeDispatcher.totalDepth() == 0) {
-                    // BLOCKED 且已排空：停止空转，等下一次 start/停止。
-                    return
+            try {
+                synchronized(readLock) {
+                    if (!paused && !blocked && !rotationPending) {
+                        val capture = checkNotNull(source)
+                        val dispatch = checkNotNull(dispatcher)
+                        if (!dispatch.hasCapacity()) throw com.echofold.capture.encoder.RecordingStorageException(
+                            "PCM_BACKPRESSURE", "音频队列达到硬上限，已停止麦克风；正在保存已接受的音频")
+                        when (val result = capture.read(buffer, length = minOf(buffer.size.toLong(), samplesUntilBoundary).toInt())) {
+                            is FrameReadResult.Read -> if (result.frames > 0) {
+                                check(dispatch.submit(result.frameIndex, result.firstMonoNs, result.capturedStartMs,
+                                    buffer, 0, result.frames) is DispatchResult.Accepted) { "PCM 队列已满，已停止采集，当前读取未提交" }
+                                acceptedFrames += result.frames
+                                samplesUntilBoundary -= result.frames
+                                if (samplesUntilBoundary == 0L) rotationPending = true
+                                dispatch.drain("amplitude")
+                            }
+                            is FrameReadResult.Failed -> throw RecordingPipelineException(result.failure.message, result.failure)
+                            else -> Unit
+                        }
+                    }
                 }
-                LockSupport.parkNanos(IDLE_PARK_NANOS)
+            } catch (error: Throwable) { reportFailure(error) }
+            LockSupport.parkNanos(1_000_000L)
+        }
+    }
+
+    private fun drainLoop(laneId: String) {
+        val dispatch = checkNotNull(dispatcher)
+        while (running) {
+            if (dispatch.lastConsumerFailure == null) {
+                dispatch.drain(laneId, 8)
+                dispatch.lastConsumerFailure?.let { reportFailure(it) }
+                if (failure == null && laneId == "encoder" && rotationPending && dispatch.totalDepth() == 0 && !paused) {
+                    try {
+                        synchronized(encoderControl) {
+                            if (!paused) {
+                                lifecycle?.prepareNextChunk()
+                                samplesUntilBoundary = lifecycle?.framesUntilBoundary ?: Long.MAX_VALUE
+                                rotationPending = false
+                            }
+                        }
+                    } catch (error: Throwable) { reportFailure(error) }
+                }
             }
+            LockSupport.parkNanos(1_000_000L)
         }
     }
 
-    private fun daemon(name: String, body: () -> Unit): Thread =
-        Thread(body, name).apply {
-            isDaemon = true
-            start()
+    private fun reportFailure(error: Throwable) {
+        synchronized(readLock) {
+            if (failure != null) return
+            failure = error
+            blocked = true
+            source?.block()
+            lanes.amplitude.pause()
         }
-
-    private companion object {
-        const val ASR_LANE: String = "asr"
-        const val ENCODER_LANE: String = "encoder"
-        const val AMPLITUDE_LANE: String = "amplitude"
-        const val DRAIN_BATCH: Int = 8
-        const val IDLE_PARK_NANOS: Long = 1_000_000L
-        const val THREAD_JOIN_TIMEOUT_MS: Long = 1_000L
+        listener?.onStateChanged(DispatchState.BLOCKED,
+            (error as? RecordingPipelineException)?.failure
+                ?: CaptureFailure(AudioCaptureError.READ_FAILED, error.message ?: "录音采集失败", error))
     }
+
+    private fun daemon(name: String, action: () -> Unit): Thread = Thread(action, name).apply { isDaemon = true; start() }
 }
 
 /**

@@ -61,3 +61,15 @@ cd app_shell && dart run build_runner build
 接手时 `adb devices` 无已连接设备，未建立安装、调试、麦克风权限、前台服务或实际编码/ASR 链路的真机基线；两台参考设备、模型工件、预注册评测和 30 分钟可行性尖刺均未通过。§1.1 与 TASK-01 保持未完成，继续工作范围见 [TASK-01](../.spec/tasks/TASK-01-foundation-spike.md)。
 
 全局 `openspec` 与 `pnpm` 启动脚本在接手环境中失效且未修复；本次未重跑 OpenSpec 结构校验，历史通过记录不代表当前工作树通过。已执行的统一门禁命令、实际结果与未测项见[校验报告](../docs/validation-report.md)。
+
+## 录音采集界面接入
+
+首页由占位文本切换为录音采集页；无已接入模型时，用户明确选择“仅录音”后，通过系统麦克风授权启动原生前台采集服务。顶部波形只接受实际 PCM 的 RMS/peak，时长使用实际采集内容偏移；暂停时冻结，继续时创建新音频块，结束或左滑达标时先封存再回到空闲，不自动开始下一次录音。
+
+录音命令复用 `com.echofold.app/platform`，状态和振幅分别通过 `session_events`、`amplitude_events` 事件通道返回。Flutter 页面重建或退到后台不拥有采集资源；按钮仅在原生确认后改变状态。权限拒绝、存储/占位或封存失败不能显示为正常录音或保存成功。录音不依赖网络，不输出模拟转写。
+
+此处描述本轮实现目标；本机与真机的实际验证、失败和待测项以[验证报告](../docs/validation-report.md)后续记录为准。三页导航、完整录音列表、设置、ASR、Drift 迁移与崩溃恢复、双设备尖刺和长测仍不在已验收范围内，TASK-01 和 TASK-04 的整体验收不因本切片改变。
+
+保存失败分两种：可安全重试的封存失败保留当前会话并提供明确重试；编码器 EOS 或封装资源已不可重放时，显示录音待恢复并禁止开始替代会话，保留原文件，不以重复 EOS 冒充重试成功。当前没有提供损坏块的用户恢复入口；不能把这一保护状态记作恢复能力已完成。
+
+调试包的私有文件可通过 `adb shell run-as com.echofold.app` 检查：会话与块索引分别为 `files/recording/sessions.json`、`files/recording/chunks.json`，块路径由索引给出，通常位于 `files/recording/sessions/<sessionId>/`。当前复用原生文件仓储，未接入最终 Drift/SQLite 提交协议。检查文件存在不能替代逐块解码、时长与 PCM 计数对账；仅录音模式不绑定虚构的模型版本。

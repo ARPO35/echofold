@@ -62,13 +62,18 @@ class RecordingController(private val environment: RecordingEnvironment) {
     var lastError: RecordingError? = null
         private set
 
-    /** 处理一条命令并返回结果（不抛异常）。 */
+    /** 处理命令；设备/封存异常上抛给服务，不能冒充成功。 */
     fun handle(command: RecordingCommand): RecordingCommandResult {
-        val result = when (command.type) {
-            RecordingCommandType.START -> start(command)
-            RecordingCommandType.PAUSE -> pause(command)
-            RecordingCommandType.RESUME -> resume(command)
-            RecordingCommandType.STOP -> stop(command)
+        val result = try {
+            when (command.type) {
+                RecordingCommandType.START -> start(command)
+                RecordingCommandType.PAUSE -> pause(command)
+                RecordingCommandType.RESUME -> resume(command)
+                RecordingCommandType.STOP -> stop(command)
+            }
+        } catch (error: Exception) {
+            reportFailure()
+            throw error
         }
         lastError = result.error
         return result
@@ -77,6 +82,16 @@ class RecordingController(private val environment: RecordingEnvironment) {
     /** 采集管线报告分发布状态变化（例如背压进入 BLOCKED、恢复后回到 RUNNING）。 */
     fun reportDispatch(state: DispatchState) {
         dispatchState = state
+    }
+
+    fun reportFailure() {
+        status = SessionStatus.FAILED
+        dispatchState = DispatchState.BLOCKED
+    }
+
+    fun reportStartupFailure() {
+        status = SessionStatus.IDLE
+        dispatchState = DispatchState.BLOCKED
     }
 
     /** 服务销毁时调用：释放资源并回到 `IDLE`（幂等）。 */
@@ -93,7 +108,7 @@ class RecordingController(private val environment: RecordingEnvironment) {
             SessionStatus.RECORDING, SessionStatus.PAUSED ->
                 return accepted(command, status)
 
-            SessionStatus.STOPPING ->
+            SessionStatus.STOPPING, SessionStatus.FAILED, SessionStatus.LOW_STORAGE_PAUSED ->
                 return rejected(command, RecordingError.ILLEGAL_STATE)
 
             else -> Unit

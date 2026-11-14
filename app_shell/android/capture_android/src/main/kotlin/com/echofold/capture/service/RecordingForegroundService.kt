@@ -1,10 +1,7 @@
 package com.echofold.capture.service
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
+import android.Manifest
+import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,364 +9,256 @@ import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import com.echofold.capture.command.CommandSubmission
-import com.echofold.capture.command.RecordingCommand
-import com.echofold.capture.command.RecordingCommandBus
-import com.echofold.capture.command.RecordingCommandResult
-import com.echofold.capture.command.RecordingCommandType
-import com.echofold.capture.command.RecordingError
-import com.echofold.capture.pipeline.RecordingPipeline
-import com.echofold.capture.pipeline.RecordingPipelineFactory
-import com.echofold.capture.pipeline.RecordingPipelineStateListener
+import com.echofold.capture.command.*
+import com.echofold.capture.encoder.*
+import com.echofold.capture.pcm.AmplitudeSampler
+import com.echofold.capture.pipeline.*
 import com.echofold.capture.session.RecordingController
 import com.echofold.capture.session.RecordingEnvironment
-import com.echofold.core.model.DispatchState
-import com.echofold.core.model.SessionStatus
+import com.echofold.core.chunk.FileChunkRepository
+import com.echofold.core.model.*
+import com.echofold.core.session.FileSessionStore
+import java.io.File
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
-/**
- * 麦克风前台录音服务。
- *
- * 契约要点：
- * 1. 只在用户从可见界面发出 `START` 后启动；服务本身不主动创建会话；
- * 2. 声明 `foregroundServiceType="microphone"`，并以
- *    [ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE] 调用 `startForeground`；
- * 3. 权限、前台条件或采集管线任一失败都不进入录音态（状态保持 `IDLE`），
- *    结果写回 [RecordingCommandBus]，界面据此展示可操作原因；
- * 4. 命令按 `commandId` 幂等：页面重建/系统重投同一 ID 不重复执行，返回首次结果；
- * 5. 通知常驻显示录音状态（录音中/已暂停/保存异常），不随页面销毁消失；
- * 6. `STOP` 与 `onDestroy` 释放采集/编码资源，通知撤销。
- *
- * 管线由集成层通过 [installPipelineFactory] 注入（真实 ASR 引擎 + 块编码器）；未注入时
- * `START` 返回 `PIPELINE_UNAVAILABLE`，服务不会伪造采集。
- */
+/** 前台服务是麦克风与文件生命周期的唯一所有者，页面销毁不发送 STOP。 */
 class RecordingForegroundService : Service() {
-
-    private val commandBus = RecordingCommandBus()
-
+    private val main = Handler(Looper.getMainLooper())
+    private val worker = ScheduledThreadPoolExecutor(1)
+    private val bus = RecordingCommandBus()
     private lateinit var controller: RecordingController
-    private lateinit var environment: ServiceEnvironment
+    private lateinit var sessions: FileSessionStore
+    private lateinit var chunks: FileChunkRepository
+    private lateinit var root: File
     private var pipeline: RecordingPipeline? = null
-    private var activeSessionId: String? = null
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    /** 管线状态回调：切回主线程刷新通知与状态机可见状态。 */
-    private val pipelineListener = RecordingPipelineStateListener { dispatch, _ ->
-        mainHandler.post {
-            controller.reportDispatch(dispatch)
-            updateNotification()
-        }
+    private var sessionId: String? = null
+    private var capturedMs = 0L
+    private var errorCode: String? = null
+    private var errorMessage: String? = null
+    @Volatile private var foregroundReady = false
+    @Volatile private var destroyed = false
+    private val delivery = object : Runnable {
+        override fun run() { RecordingBridge.deliver(); main.postDelayed(this, 100L) }
     }
 
     override fun onCreate() {
         super.onCreate()
-        environment = ServiceEnvironment()
-        controller = RecordingController(environment)
-        createNotificationChannel()
+        controller = RecordingController(Environment())
+        root = File(filesDir, "recording")
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "录音状态", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "录音进行中的常驻状态提示"; setShowBadge(false)
+            })
+        main.post(delivery)
+        worker.scheduleAtFixedRate({
+            try {
+                pipeline?.let { capturedMs = it.capturedMs }
+                publish()
+            } catch (error: Exception) { fail(error) }
+        }, 250, 250, TimeUnit.MILLISECONDS)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val parsed = ParsedCommand.from(intent)
-        if (parsed == null) {
-            stopSelf(startId)
+        val id = intent?.getStringExtra(EXTRA_COMMAND_ID)
+        val type = RecordingCommandType.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_COMMAND_TYPE) }
+        if (id.isNullOrBlank() || type == null || intent.action != ACTION_COMMAND) {
+            // 无效或系统重投 Intent 不得结束现有录音，也不自动恢复。
+            if (sessionId == null) stopSelf(startId)
             return START_NOT_STICKY
         }
-
-        when (val submission = commandBus.enqueue(parsed.command)) {
-            is CommandSubmission.Accepted -> execute(parsed, startId)
-
-            is CommandSubmission.Duplicate -> {
-                // 重复命令不执行：若首次结果已存在，同步通知后按状态收尾。
-                submission.result?.let { result ->
-                    updateNotification()
-                    if (isIdleOrStopped(result)) {
-                        teardownForeground(startId)
-                    }
-                }
-            }
-
-            CommandSubmission.Full -> {
-                // 队列已满：拒绝但不改变录音状态，界面稍后重试。
-                val result = RecordingCommandResult(
-                    commandId = parsed.command.commandId,
-                    type = parsed.command.type,
-                    accepted = false,
-                    status = controller.status,
-                    error = RecordingError.ILLEGAL_STATE,
-                )
-                commandBus.complete(parsed.command.commandId, result)
-                updateNotification()
+        val command = RecordingCommand(id, type)
+        val submission = bus.enqueue(command)
+        if (submission !is CommandSubmission.Accepted) {
+            if (submission is CommandSubmission.Duplicate && submission.result != null) {
+                RecordingBridge.complete(id, submission.result.error?.name, submission.result.error?.name)
+            } else if (submission == CommandSubmission.Full) RecordingBridge.complete(id, "COMMAND_BUSY", "录音命令繁忙，请稍后重试")
+            return START_NOT_STICKY
+        }
+        if (type == RecordingCommandType.START && !foregroundReady) {
+            try {
+                check(checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) { "请先授予麦克风权限" }
+                startForeground(NOTIFICATION_ID, notification("正在准备录音"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                foregroundReady = true
+            } catch (error: Exception) {
+                val code = if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) "MIC_PERMISSION_DENIED" else "FOREGROUND_UNAVAILABLE"
+                RecordingBridge.complete(id, code, error.message ?: "无法启动麦克风前台服务，请从可见页面重试")
+                bus.complete(id, RecordingCommandResult(id, type, false, SessionStatus.IDLE, RecordingError.FOREGROUND_UNAVAILABLE))
+                stopSelf(startId)
+                return START_NOT_STICKY
             }
         }
+        val requestedSession = intent.getStringExtra(EXTRA_SESSION_ID)
+        val onlyRecording = intent.getBooleanExtra(EXTRA_ONLY_RECORDING, false)
+        worker.execute { execute(command, requestedSession, onlyRecording, startId) }
         return START_NOT_STICKY
     }
 
-    override fun onDestroy() {
-        controller.release()
-        pipeline = null
-        activeSessionId = null
-        commandBus.clear()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        super.onDestroy()
-    }
-
-    private fun execute(parsed: ParsedCommand, startId: Int) {
-        val command = parsed.command
-        if (command.type == RecordingCommandType.START) {
-            if (parsed.sessionId.isNullOrBlank()) {
-                finish(
-                    RecordingCommandResult(
-                        commandId = command.commandId,
-                        type = command.type,
-                        accepted = false,
-                        status = SessionStatus.IDLE,
-                        error = RecordingError.MISSING_SESSION,
-                    ),
-                    startId,
-                )
-                return
+    private fun execute(command: RecordingCommand, requestedSession: String?, onlyRecording: Boolean, startId: Int) {
+        val rejectedStart = command.type == RecordingCommandType.START && controller.status != SessionStatus.IDLE
+        try {
+            errorCode = null; errorMessage = null
+            if (command.type == RecordingCommandType.START) {
+                check(onlyRecording) { "必须显式选择仅录音模式" }
+                check(controller.status == SessionStatus.IDLE) { "已有会话，请先停止当前录音" }
+                check(!requestedSession.isNullOrBlank()) { "缺少会话身份" }
+                sessions = FileSessionStore(File(root, "sessions.json"))
+                chunks = FileChunkRepository(File(root, "chunks.json"))
+                val now = System.currentTimeMillis()
+                val sid = requestedSession
+                check(sessions.find(sid) == null) { "会话身份已存在，禁止覆写" }
+                sessions.create(RecordingSession(sid, SessionStatus.IDLE, DispatchState.BLOCKED, now,
+                    null, null, null, null, 0,
+                    ClockAnchor(sid, now, System.nanoTime(), ClockQuality.DEVICE_BOOT_BASED)))
+                sessionId = sid
+                capturedMs = 0L
             }
-            // 权限先于 startForeground 检查：Android 14 起麦克风前台类型在无权限时 startForeground 会抛
-            // SecurityException，先分类才能给用户“去授权”的可操作原因。
-            if (!environment.hasMicrophonePermission()) {
-                finish(
-                    RecordingCommandResult(
-                        commandId = command.commandId,
-                        type = command.type,
-                        accepted = false,
-                        status = SessionStatus.IDLE,
-                        error = RecordingError.MIC_PERMISSION_DENIED,
-                    ),
-                    startId,
-                )
-                return
+            val result = controller.handle(command)
+            if (!result.accepted) {
+                errorCode = result.error?.name ?: "PIPELINE_UNAVAILABLE"
+                errorMessage = when (result.error) {
+                    RecordingError.MIC_PERMISSION_DENIED -> "请授予麦克风权限后重试"
+                    RecordingError.FOREGROUND_UNAVAILABLE -> "请从可见页面启动录音"
+                    RecordingError.ILLEGAL_STATE -> "当前状态不允许该操作"
+                    else -> "录音管线不可用，请检查麦克风和存储空间"
+                }
             }
-            // 已在录音/暂停时重复 START 是幂等 no-op，不得替换当前会话。
-            if (controller.status == SessionStatus.IDLE) {
-                activeSessionId = parsed.sessionId
+            persist()
+            if (result.accepted && result.status == SessionStatus.IDLE) sessionId = null
+            publish()
+            bus.complete(command.commandId, result)
+            RecordingBridge.complete(command.commandId, errorCode, errorMessage)
+            main.post {
+                if (result.status == SessionStatus.IDLE) {
+                    stopForeground(STOP_FOREGROUND_REMOVE); foregroundReady = false; stopSelf(startId)
+                } else updateNotification()
             }
-            environment.foregroundReady = enterForeground()
-            if (!environment.foregroundReady) {
-                activeSessionId = null
-                finish(
-                    RecordingCommandResult(
-                        commandId = command.commandId,
-                        type = command.type,
-                        accepted = false,
-                        status = SessionStatus.IDLE,
-                        error = RecordingError.FOREGROUND_UNAVAILABLE,
-                    ),
-                    startId,
-                )
-                return
+        } catch (error: Exception) {
+            // 拒绝 START 只报告命令错误，绝不能释放正在录音的管线。
+            if (rejectedStart) {
+                RecordingBridge.complete(command.commandId, "ILLEGAL_STATE", error.message)
+            } else {
+                fail(error)
+                if (command.type == RecordingCommandType.START && (pipeline?.capturedMs ?: 0L) == 0L) {
+                    controller.reportStartupFailure()
+                    try { persist() } catch (persistError: Exception) { error.addSuppressed(persistError) }
+                    pipeline = null
+                    sessionId = null
+                    capturedMs = 0L
+                    publish()
+                }
+                RecordingBridge.complete(command.commandId, errorCode, errorMessage)
             }
-        } else {
-            // 已在前台时保持通知最新；前台条件失败只会让命令被拒绝，不改变状态。
-            environment.foregroundReady = enterForeground()
-        }
-
-        val result = try {
-            controller.handle(command)
-        } catch (error: RuntimeException) {
-            RecordingCommandResult(
-                commandId = command.commandId,
-                type = command.type,
-                accepted = false,
-                status = controller.status,
-                error = RecordingError.PIPELINE_UNAVAILABLE,
-            )
-        }
-        if (!result.accepted) {
-            activeSessionId = null
-        }
-        finish(result, startId)
-    }
-
-    private fun finish(result: RecordingCommandResult, startId: Int) {
-        commandBus.complete(result.commandId, result)
-        updateNotification()
-        if (isIdleOrStopped(result)) {
-            teardownForeground(startId)
+            bus.complete(command.commandId, RecordingCommandResult(command.commandId, command.type,
+                false, controller.status, RecordingError.PIPELINE_UNAVAILABLE))
+            if (sessionId == null) main.post { stopForeground(STOP_FOREGROUND_REMOVE); foregroundReady = false; stopSelf(startId) }
         }
     }
 
-    private fun isIdleOrStopped(result: RecordingCommandResult): Boolean =
-        !result.accepted || result.status == SessionStatus.IDLE
-
-    private fun teardownForeground(startId: Int) {
-        pipeline = null
-        activeSessionId = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf(startId)
-    }
-
-    /** 进入前台并返回是否成功；任何平台失败都不进入录音态。 */
-    private fun enterForeground(): Boolean {
-        val notification = buildNotification()
-        return try {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-            )
-            true
-        } catch (_: SecurityException) {
-            false
-        } catch (_: IllegalStateException) {
-            false
-        } catch (_: RuntimeException) {
-            false
+    private fun fail(error: Exception) {
+        errorCode = (error as? RecordingStorageException)?.code
+            ?: (error.cause as? RecordingStorageException)?.code
+            ?: (error as? RecordingPipelineException)?.failure?.error?.name ?: "PIPELINE_UNAVAILABLE"
+        errorMessage = error.message ?: "录音失败，已保留文件，请检查麦克风或存储"
+        controller.reportFailure()
+        try { pipeline?.pause() } catch (pauseError: Exception) { error.addSuppressed(pauseError) }
+        try { persist() } catch (persistError: Exception) {
+            errorMessage = "$errorMessage；保存会话状态失败：${persistError.message}"
         }
+        publish()
+        main.post { updateNotification() }
     }
 
-    private fun updateNotification() {
-        val manager = getSystemService(NotificationManager::class.java) ?: return
-        if (controller.status == SessionStatus.IDLE) return
-        manager.notify(NOTIFICATION_ID, buildNotification())
+    private fun persist() {
+        val sid = sessionId ?: return
+        if (::sessions.isInitialized) sessions.updateState(sid, controller.status, controller.dispatchState)
     }
 
-    private fun buildNotification(): Notification {
-        val builder = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle(NOTIFICATION_TITLE)
-            .setContentText(statusText())
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setCategory(Notification.CATEGORY_SERVICE)
-        launchIntent()?.let { builder.setContentIntent(it) }
-        return builder.build()
+    private fun publish() {
+        RecordingBridge.publish(sessionId, controller.status.name,
+            controller.status != SessionStatus.RECORDING || controller.dispatchState == DispatchState.BLOCKED,
+            capturedMs, errorCode, errorMessage)
     }
 
-    private fun statusText(): String = when {
-        controller.dispatchState == DispatchState.BLOCKED -> "录音保存异常：已停止采集，等待重试"
-        controller.status == SessionStatus.RECORDING -> "正在录音"
-        controller.status == SessionStatus.PAUSED -> "已暂停录音"
-        controller.status == SessionStatus.STOPPING -> "正在结束录音"
-        controller.status == SessionStatus.LOW_STORAGE_PAUSED -> "存储空间不足，已暂停"
-        controller.status == SessionStatus.FAILED -> "录音失败，请检查权限或存储"
-        else -> "未在录音"
-    }
-
-    private fun launchIntent(): PendingIntent? {
-        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return null
-        return PendingIntent.getActivity(
-            this,
-            0,
-            launch,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-    }
-
-    private fun createNotificationChannel() {
-        val manager = getSystemService(NotificationManager::class.java) ?: return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            CHANNEL_NAME,
-            NotificationManager.IMPORTANCE_LOW,
-        ).apply {
-            description = "录音进行中的常驻状态提示"
-            setShowBadge(false)
-        }
-        manager.createNotificationChannel(channel)
-    }
-
-    /** 服务侧环境实现：权限、前台条件与管线生命周期都在这里落地。 */
-    private inner class ServiceEnvironment : RecordingEnvironment {
-
-        /** `startForeground` 是否成功；由 [execute] 在命令处理前设置。 */
-        var foregroundReady: Boolean = false
-
-        override fun hasMicrophonePermission(): Boolean =
-            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-
-        override fun canStartForeground(): Boolean = foregroundReady
-
+    private inner class Environment : RecordingEnvironment {
+        override fun hasMicrophonePermission() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        override fun canStartForeground() = foregroundReady
         override fun acquirePipeline(): Boolean {
-            val factory = pipelineFactory ?: return false
-            val sessionId = activeSessionId ?: return false
-            val created = try {
-                factory.create(sessionId)
-            } catch (_: RuntimeException) {
-                null
-            } ?: return false
-            return try {
-                created.start()
-                created.setStateListener(pipelineListener)
-                pipeline = created
-                controller.reportDispatch(created.dispatchState)
-                true
-            } catch (_: Exception) {
-                // 启动失败必须释放已部分获取的资源，并保持 IDLE。
-                runCatching { created.stopAndRelease() }
-                false
+            val sid = checkNotNull(sessionId)
+            val sink = RecordingChunkSink(sid, root, chunks, AndroidAacChunkEncoderFactory(), { chunk ->
+                sessions.updateActiveChunk(sid, chunk.chunkSeq)
+            })
+            val created = DefaultRecordingPipelineFactory({ CaptureLanes(null, sink,
+                AmplitudeSampler(listener = { RecordingBridge.offerAmplitude(sid, it) })) },
+                audioConfig = com.echofold.capture.source.AudioRecordConfig(readBufferFrames = 96_000)).create(sid)
+            pipeline = created
+            created.setStateListener { _, failure -> if (!worker.isShutdown) worker.execute {
+                fail(failure?.cause as? Exception ?: if (failure != null)
+                    RecordingPipelineException(failure.message, failure)
+                    else RecordingStorageException("PCM_BACKPRESSURE", "音频保存队列已满，已停止采集，请检查存储"))
+            } }
+            try { created.start() } catch (error: Exception) {
+                try { created.stopAndRelease() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
+                throw error
             }
+            return true
         }
-
-        override fun pausePipeline() {
-            runCatching { pipeline?.pause() }
-        }
-
-        override fun resumePipeline() {
-            runCatching { pipeline?.resume() }
-        }
-
+        override fun pausePipeline() { checkNotNull(pipeline).pause(); capturedMs = checkNotNull(pipeline).capturedMs }
+        override fun resumePipeline() { checkNotNull(pipeline).resume() }
         override fun releasePipeline() {
-            runCatching { pipeline?.stopAndRelease() }
+            val current = pipeline ?: return
+            if (controller.status == SessionStatus.STOPPING) publish()
+            try { current.stopAndRelease() } finally { capturedMs = current.capturedMs }
             pipeline = null
         }
     }
 
-    /** 解析后的命令；`START` 必须携带会话 ID。 */
-    private data class ParsedCommand(val command: RecordingCommand, val sessionId: String?) {
-        companion object {
-            fun from(intent: Intent?): ParsedCommand? {
-                if (intent == null || intent.action != ACTION_COMMAND) return null
-                val commandId = intent.getStringExtra(EXTRA_COMMAND_ID) ?: return null
-                val typeName = intent.getStringExtra(EXTRA_COMMAND_TYPE) ?: return null
-                val type = runCatching { RecordingCommandType.valueOf(typeName) }.getOrNull() ?: return null
-                if (commandId.isBlank()) return null
-                return ParsedCommand(
-                    command = RecordingCommand(commandId, type),
-                    sessionId = intent.getStringExtra(EXTRA_SESSION_ID),
-                )
-            }
+    override fun onDestroy() {
+        destroyed = true
+        foregroundReady = false
+        main.removeCallbacks(delivery)
+        worker.execute {
+            try { controller.release(); persist() } catch (error: Exception) { fail(error) }
+            publish()
         }
+        worker.shutdown()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        super.onDestroy()
     }
 
-    companion object {
-        /** 服务动作：所有命令都通过带该 action 的 Intent 投递。 */
-        const val ACTION_COMMAND: String = "com.echofold.capture.action.RECORDING_COMMAND"
-
-        const val EXTRA_COMMAND_ID: String = "com.echofold.capture.extra.COMMAND_ID"
-        const val EXTRA_COMMAND_TYPE: String = "com.echofold.capture.extra.COMMAND_TYPE"
-        const val EXTRA_SESSION_ID: String = "com.echofold.capture.extra.SESSION_ID"
-
-        private const val NOTIFICATION_ID = 4_711
-        private const val CHANNEL_ID = "echofold.recording"
-        private const val CHANNEL_NAME = "录音状态"
-        private const val NOTIFICATION_TITLE = "EchoFold 录音"
-
-        @Volatile
-        private var pipelineFactory: RecordingPipelineFactory? = null
-
-        /** 集成层注入真实管线工厂；注入前 `START` 会被拒绝而不是伪造采集。 */
-        fun installPipelineFactory(factory: RecordingPipelineFactory?) {
-            pipelineFactory = factory
+    private fun updateNotification() {
+        if (!foregroundReady || destroyed) return
+        val text = when (RecordingBridge.snapshot["status"]) {
+            "RECORDING" -> "正在录音 · 仅录音"
+            "PAUSED" -> "录音已暂停"
+            "FAILED" -> "录音保存异常，文件已保留，请打开查看"
+            else -> "录音状态已更新"
         }
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
+    }
 
-        /** 构造启动服务的命令 Intent，供 Flutter 桥/Activity 调用。 */
-        fun commandIntent(
-            context: Context,
-            commandId: String,
-            type: RecordingCommandType,
-            sessionId: String? = null,
-        ): Intent = Intent(context, RecordingForegroundService::class.java)
-            .setAction(ACTION_COMMAND)
-            .putExtra(EXTRA_COMMAND_ID, commandId)
-            .putExtra(EXTRA_COMMAND_TYPE, type.name)
-            .apply { if (sessionId != null) putExtra(EXTRA_SESSION_ID, sessionId) }
+    private fun notification(text: String): Notification = Notification.Builder(this, CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("EchoFold 录音")
+        .setContentText(text).setOngoing(true).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_SERVICE)
+        .apply { packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
+            setContentIntent(PendingIntent.getActivity(this@RecordingForegroundService, 0, launch,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+        } }.build()
+
+    companion object {
+        const val ACTION_COMMAND = "com.echofold.capture.action.RECORDING_COMMAND"
+        const val EXTRA_COMMAND_ID = "com.echofold.capture.extra.COMMAND_ID"
+        const val EXTRA_COMMAND_TYPE = "com.echofold.capture.extra.COMMAND_TYPE"
+        const val EXTRA_SESSION_ID = "com.echofold.capture.extra.SESSION_ID"
+        const val EXTRA_ONLY_RECORDING = "com.echofold.capture.extra.ONLY_RECORDING"
+        private const val NOTIFICATION_ID = 4711
+        private const val CHANNEL_ID = "echofold.recording"
+        fun commandIntent(context: Context, commandId: String, type: RecordingCommandType,
+            sessionId: String? = null, onlyRecording: Boolean = false): Intent =
+            Intent(context, RecordingForegroundService::class.java).setAction(ACTION_COMMAND)
+                .putExtra(EXTRA_COMMAND_ID, commandId).putExtra(EXTRA_COMMAND_TYPE, type.name)
+                .putExtra(EXTRA_SESSION_ID, sessionId).putExtra(EXTRA_ONLY_RECORDING, onlyRecording)
     }
 }

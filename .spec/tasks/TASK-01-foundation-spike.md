@@ -43,9 +43,13 @@ size: L
 | 工程结构与本地入口 | `app_shell` 已有 Flutter、`core`、`capture_android`、`asr_android`；统一 Makefile 契约及工具覆盖见 [app_shell/README.md](../../app_shell/README.md)；Flutter analyzer 输出 `No issues found!`，30 项 Flutter 单测输出 `+30 All tests passed!` | Android 构建、JVM 测试、Android lint 及 Python 评测工具受离线缓存缺口阻塞，未验收；不构成整体门禁通过 |
 | SDK 配置 | `app` minSdk 显式 29，compileSdk/targetSdk 经本机 Flutter 3.47.9 扩展解析均为 36；两个 Android library minSdk 29、compileSdk 36；`core` 为 JVM 17 | 当前为配置读取结果；未核对最终 APK manifest、设备兼容性及商店目标 API 政策；更换 Flutter SDK 须重核 |
 | 直接依赖许可 | 已核对锁定版本的 16 个 hosted 直接 Pub 包 LICENSE、Flutter 顶层 LICENSE，以及版本目录 5 项 Maven 依赖的缓存 POM；具体版本及声明见[校验报告](../../docs/validation-report.md) | 未完成全部传递/平台/原生工件、构建工具与 SDK 第三方告知、最终 APK NOTICE、运行时/模型及评测数据许可审查 |
-| 真机调试 | 接手时 `adb devices` 列表为空 | 未连接设备，安装/启动、权限、通知、后台服务、编码和 ASR 真机链路未通过 |
+| 真机调试 | 后续已连接 nubia NX712J（Android 14 / API 34 / ARM64），构建 debug APK 并由用户安装；占位首页正常显示，冷启动返回 `Status: ok`、1527ms，采集的错误日志为空 | 这仅证明外壳可安装启动；权限、通知、后台服务、编码和 ASR 完整链路尚未验收；详见验证报告的后续记录 |
 | OpenSpec 结构校验 | 2026-11-09 的固定版本通过结果保留为历史记录 | 接手全局 `openspec` / `pnpm` 启动脚本失效且未修复；本轮未重跑，不宣称当前结构通过 |
 
 当前环境可用工具位置、配置依据和明确未测项已记录到现有文档，未下载新软件或更改全局工具。§1.1 的许可及真机出口未完成，§1.2–1.11 也无本轮通过证据：设备身份/环境、工件哈希与 ABI/INT8 来源、冻结 manifest/评分器/规范化、预注册门槛与试点、双设备 30 分钟尖刺及 go/no-go 均待完成；两小时发布长测属于后续独立出口。OpenSpec `tasks.md` §1.1 和本任务验收保持未勾选。
 
 首轮 `make -k build test lint` 离线门禁返回退出码 2：Flutter 单测 30 项通过，analyzer 报告 73 个 issues；Android 路径因 `android_file_picker` 插件所需 AGP 8.5.2 / Kotlin 1.8.22 未缓存而停在配置阶段；Python 路径因 pytest 未缓存而解析失败，空 `tests` 目录未进入收集。修复 Drift 命名及 Flutter 类型/模型导入冲突后，第二轮仍因已有生成代码占位实现的 1 项 warning 失败；使用缓存 build_runner 生成真实 schema（`Built with build_runner/aot in 4s; wrote 14 outputs.`）后，第三轮 `make -k lint-flutter test-flutter FLUTTER=/home/lzx/dev/tools/flutter/bin/flutter` 返回退出码 0，输出 `No issues found!` 与 `+30 All tests passed!`。Android/Python 缓存阻塞仍存在，生成成功不等同于 §1.10 的迁移与恢复协议验收，真机与前置评测仍未验收。完整命令与各轮结果见[校验报告](../../docs/validation-report.md)。局部静态分析及单测通过不改变本任务或 §1.1 状态。
+
+## 用户要求的后续录音采集切片
+
+用户在完成上述安装后明确要求继续开发录音采集界面，因此后续按 [TASK-04 的限定切片](TASK-04-flutter-ui.md)接入真实采集能力。该工作调整了此前“仅本地基线、不推进 UI”的执行范围，不表示 §1 gate 已通过，也不替代模型工件冻结、预注册、双设备尖刺及评审；本任务和所有 §1 验收继续保持未完成。新增实现和真机验证须在[验证报告](../../docs/validation-report.md)单独记录，不能沿用外壳启动证据。

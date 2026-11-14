@@ -153,3 +153,37 @@ No issues found!
 ```
 
 最终通过范围仅为 Flutter analyzer 与现有 30 项 Flutter 单元测试。Android 构建、JVM 测试、Android lint 及 Python 评测工具仍因上述缓存缺口未通过，真机、许可完整性、数据库迁移与前置评测也未验收；不能将第三轮 Flutter 子目标通过写成根 `make build/test/lint` 全部通过或 TASK-01 完成。
+
+## 2026-11-14 Android 构建与占位首页真机检查
+
+后续联网构建通过显式 `-I /tmp/echofold-central-mirror-20261114.init.gradle` 将 Maven Central 请求指向 Google 官方镜像，仅影响该次 Gradle 调用，没有修改全局仓库配置。`:app:assembleDebug` 输出 `BUILD SUCCESSFUL in 5m31s`（194 tasks），debug APK 为 `app_shell/build/app/outputs/flutter-apk/app-debug.apk`，180113004 字节。构建过程中 Gradle 自动安装了 `/home/lzx/dev/tools/android-sdk` 下的 Android SDK Platform 35 revision 2，已向用户披露；该环境增量不代表新增许可审查通过。
+
+设备为 nubia Z50 Ultra / NX712J，Android 14 / API 34，ARM64，ADB 序列号 `D123060104D2`。用户手动完成安装后，`pm path com.echofold.app` 确认安装在 User 0，版本为 1.0 / versionCode 1，最终包 minSdk 29、targetSdk 36。流式和 push 方式的 ADB 安装均曾因厂商安装会话 `-1` 返回 `SecurityException`，未修改手机安装安全设置。
+
+占位首页检查：`am start -W -n com.echofold.app/.MainActivity` 返回 `Status: ok`，前台 Activity 与进程存活；截图显示“EchoFold / 录音与转写界面将在后续切片接入”。停止进程后的再次启动返回 `LaunchState: COLD`、`TotalTime: 1527`、`Status: ok`。采集的 AndroidRuntime/Flutter 错误日志为空。本记录只证明当时应用外壳的安装与启动，不代表录音、通知、编码、ASR 或 §1 gate 验收通过；此前“未连接设备”的文字是接手时历史状态。
+
+用户随后要求开发录音采集界面，本轮实施范围和仍未通过的依赖见 [TASK-04](../.spec/tasks/TASK-04-flutter-ui.md)。采集界面新增实现的验证须另列实际结果，不能沿用占位首页结果。
+
+## 录音采集界面本地验证
+
+首页接入范围为录音采集页：用户明确确认仅录音、系统麦克风授权、原生确认后开始/暂停/继续/结束、顶部真实振幅、红按钮实际位移左滑和可访问结束按钮、失败会话保护与重连。没有宣称三页导航或 ASR 已接通。
+
+首轮 `make -k lint-flutter test-flutter FLUTTER=/home/lzx/dev/tools/flutter/bin/flutter`：46 项测试通过，analyzer 因新增录音文件的 3 项缺少花括号及 1 项多余导入而失败；其中一个波形拖动测试出现未命中警告，随后改为实际坐标手势验证，未压制警告。补充不可重复 EOS 封存的恢复状态回归后，再执行相同命令，退出码 0，analyzer 输出 `No issues found!`，48 项 Flutter 测试全部通过（原有 30 项，新增录音控制器/widget 18 项），无上述命中警告。
+
+覆盖范围包括权限拒绝不假录音、永久拒绝设置入口、命令防重、原生状态确认、暂停与继续、保存失败保留旧会话、需要恢复时禁止新建、真实振幅单调/容量/时间窗口、暂停冻结、重连/dispose，以及短快/慢长/空闲左滑、窄轨道、减少动画、波形区域不触发结束和窄屏大字。此为 fake 平台边界下的 Dart/widget 证据，不能替代 Android 编码、前台服务、手机实际画面或真实音频解码结果；原生与真机验证另记。
+
+### Android 验证尝试与当前存储边界
+
+首次原生门禁使用 `JAVA_HOME=/home/lzx/dev/tools/jdk21 ANDROID_HOME=/home/lzx/dev/tools/android-sdk` 执行 `./gradlew --offline --console=plain :app:assembleDebug :capture_android:testDebugUnitTest :core:test`，在第三方插件 classpath 依赖解析阶段失败，尚未进入新增 Kotlin 编译。随后复用临时镜像脚本的调用因脚本已不存在而立即失败；重新在 `/tmp` 创建仅通过 `-I` 显式加载的脚本后继续构建，最终结果须另记，不将重试写成通过。
+
+当前仅录音组装复用已有 `FileSessionStore`、`FileChunkRepository`、占位/封存协议与 AAC/MediaMuxer，实现新增应用到采集模块的依赖。配置修改前保留 `/tmp/echofold-app-build.gradle.kts.capture-native.bak`、`/tmp/echofold-AndroidManifest.xml.capture-native.bak`；对比结果仅有 `implementation(project(":capture_android"))`，manifest 无差异。没有修改全局配置、Pub 缓存或手机安装安全设置。
+
+文件仓储仍属于当前采集切片的实际持久化边界，最终 Drift/SQLite 事务与迁移未接入、未验收。封存空间使用 core `SpaceBudget` 的设备实现实际预分配；元数据码率来自编码器格式或配置回退，不等于测得的码流码率。实际音频质量、可解码性和分块/暂停时间对账必须以设备文件验证为准。不可重放的 EOS/封装失败保留原会话和文件并进入待恢复状态，当前没有用户恢复入口，不宣称实现 §9.1。
+
+恢复临时脚本后，执行 `./gradlew -I /tmp/echofold-central-mirror-20261114.init.gradle --console=plain :app:assembleDebug :capture_android:testDebugUnitTest :core:test`（上述 JDK/SDK 环境）返回 `BUILD SUCCESSFUL in 49s`，222 tasks（53 executed / 169 up-to-date）。JUnit XML 汇总：采集模块 88 项、Core 202 项，failure/error/skipped 均为 0。APK 当轮为 202852429 字节；`aapt dump badging` 确认 minSdk 29、targetSdk 36，并包含 RECORD_AUDIO、FOREGROUND_SERVICE_MICROPHONE 等原有采集 manifest 合并声明。
+
+构建输出仍有既有 Kotlin Gradle 插件迁移和 SDK XML 工具版本警告；另发现编码能力可空访问及 service 多余 safe-call 警告，随后定点修正，并补充故障测试的失败清理，最终重建结果须另记。以上 JUnit 证据覆盖的是 JVM/fake 设备接口，不代表真实 MediaCodec、手机后台策略、通知可见性或 60 秒设备分块已验收。
+
+最终定点修订后执行 `:app:assembleDebug :capture_android:testDebugUnitTest :app:lintDebug :capture_android:lintDebug`（同一临时镜像与 JDK/SDK）返回 `BUILD SUCCESSFUL in 1m 37s`，394 tasks（197 executed / 197 up-to-date）。最终 APK 为 202847480 字节，已通过 ADB push 到设备 `/sdcard/Download/EchoFold-debug.apk`，并发出打开系统下载列表的 Intent。配置事前备份在差异核对、构建和 lint 通过后已清理。
+
+手机此时尚未确认更新安装；唤醒后的即时截图为全黑，无法据此确认安装界面或新录音页显示。此前厂商 ADB 安装会话 `-1` 故障已有证据，本轮未重复静默安装或修改安全设置。需要用户解锁并安装下载目录中的新 APK 后，才能继续实际界面、麦克风、暂停/继续、后台及 M4A 解码验证；这些项当前均为待测，不能用已通过的本地门禁替代。

@@ -153,20 +153,20 @@ class AacChunkEncoder(
             return failSeal(EncoderStage.FINALIZE, "通知编码器结束失败", error)
         }
 
-        var tailOutputs = 0
-        while (tailOutputs <= MAX_TAIL_OUTPUTS) {
+        var sawEos = false
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (System.nanoTime() < deadline) {
             val buffer = try {
                 codec.dequeueOutput()
             } catch (error: Exception) {
                 return failSeal(EncoderStage.DRAIN, "尾部排空失败", error)
-            } ?: break
-            val writeFailure = handleOutput(buffer)
-            if (writeFailure != null) {
-                return failSeal(writeFailure.stage, writeFailure.message, writeFailure.cause)
             }
-            tailOutputs++
-            if (buffer.isEndOfStream) break
+            if (buffer == null) { java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L); continue }
+            val writeFailure = handleOutput(buffer)
+            if (writeFailure != null) return failSeal(writeFailure.stage, writeFailure.message, writeFailure.cause)
+            if (buffer.isEndOfStream) { sawEos = true; break }
         }
+        if (!sawEos) return failSeal(EncoderStage.DRAIN, "编码器未确认 EOS，禁止报告封存成功", null)
 
         try {
             writer.finalizeAndClose()
@@ -229,9 +229,9 @@ class AacChunkEncoder(
 
     /** 处理一段编码输出；返回失败描述或 null（成功）。 */
     private fun handleOutput(buffer: EncodedBuffer): EncoderFailure? {
-        if (buffer.isCodecConfig || buffer.isEndOfStream || buffer.size == 0) {
-            // 编解码配置与零长 EOS 标记不需要写入容器；顺手刷新实际格式。
-            refreshCapability(fallback = activeFormat ?: return null)
+        refreshCapability(fallback = activeFormat ?: return EncoderFailure(EncoderStage.DRAIN, "编码格式缺失"))
+        if (buffer.isCodecConfig || buffer.size == 0) {
+            // EOS 可能携带最后一段音频，只有零长 EOS 才跳过。
             return null
         }
         val format = writeFormat ?: activeFormat
@@ -286,8 +286,6 @@ class AacChunkEncoder(
     private companion object {
         const val MICROS_PER_SECOND: Long = 1_000_000L
 
-        /** 尾部排空上限，防止编码器故障时死循环。 */
-        const val MAX_TAIL_OUTPUTS: Int = 10_000
 
         const val UNKNOWN_CODEC: String = "未上报"
 

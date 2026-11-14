@@ -223,6 +223,7 @@ class FileChunkRepository(
 
     private fun JsonObject.optionalString(key: String): String? {
         val element = this[key] ?: return null
+        if (element is JsonNull) return null
         val primitive = element as? JsonPrimitive ?: throw IllegalStateException("块仓储 $key 必须是字符串")
         if (!primitive.isString) throw IllegalStateException("块仓储 $key 必须是字符串")
         return primitive.content
@@ -245,6 +246,7 @@ class FileChunkRepository(
 
     private fun JsonObject.optionalLong(key: String): Long? {
         val element = this[key] ?: return null
+        if (element is JsonNull) return null
         val primitive = element as? JsonPrimitive ?: throw IllegalStateException("块仓储 $key 必须是数字")
         if (!primitive.isString) {
             return primitive.longOrNull ?: throw IllegalStateException("块仓储 $key 必须是整数")
