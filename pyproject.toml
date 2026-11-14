@@ -1,0 +1,23 @@
+# uv 工作区根：Flutter 应用本身不使用 Python，此文件只负责 ASR 评测工具。
+[project]
+name = "echofold-workspace"
+version = "0.0.0"
+description = "Echofold 评测工具工作区（ASR/重识别基准与报告）"
+requires-python = ">=3.11"
+dependencies = ["echofold-benchmark"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["tool/benchmark"]
+
+[tool.uv.sources]
+echofold-benchmark = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tool/benchmark/tests"]
+addopts = "-q"
