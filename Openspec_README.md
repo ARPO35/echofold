@@ -63,7 +63,7 @@
 
 ## 7. 使用与校验
 
-需要 Node.js 20.19+。在本目录执行：
+OpenSpec CLI 历史记录使用 Node.js 20.19+ 与固定版本 `@fission-ai/openspec@1.16.1`。在工具可用时，预期命令为：
 
 ```bash
 pnpm dlx @fission-ai/openspec@1.16.1 list
@@ -71,12 +71,13 @@ pnpm dlx @fission-ai/openspec@1.16.1 validate add-live-semantic-transcript --str
 pnpm dlx @fission-ai/openspec@1.16.1 status --change add-live-semantic-transcript
 ```
 
-当前任务均未完成。文档已按评审决策同步，固定版本 OpenSpec 严格结构校验已通过；预注册冻结、技术尖刺和实现验收尚未完成，不能据此宣称已可实施。评审、预注册冻结和技术原型通过后，才可进入 apply；实现验收后再归档，将 delta specs 合并到 `openspec/specs/`。
+接手时全局 `pnpm` 与 `openspec` 启动脚本失效，未重装、未修复、未下载新工具；本轮未执行上述命令。2026-11-09 的固定版本严格结构校验结果仅作为历史记录，不能据此证明当前工作树通过。当前任务仍未完成，OpenSpec `tasks.md` §1（含 1.1）保持未勾选；预注册冻结、技术尖刺、真实设备与实现验收均未完成，不能据此宣称可实施或进入 apply。构建、测试、lint 和真机门禁也不由本 README 预先宣称通过，接手基线与缺口见[校验报告](docs/validation-report.md)和[TASK-01](.spec/tasks/TASK-01-foundation-spike.md)。
+
+实现验收完成后，才可在工具恢复并重新验证后归档变更，再将 delta specs 合并到 `openspec/specs/`。
 
 ## 8. 包信息
 
-- OpenSpec schema：`spec-driven`
-- 变更 ID：`add-live-semantic-transcript`
-- 文档语言：简体中文；保留 OpenSpec 结构标题与 RFC 2119 关键字
-- 设计基线日期：2026-11-09
-- 目标平台：Android；建议 minSdk 29，targetSdk 在实现时采用最新稳定版本并重新核对平台政策
+OpenSpec schema：`spec-driven`；变更 ID：`add-live-semantic-transcript`；文档语言：简体中文；保留 OpenSpec 结构标题与 RFC 2119 关键字。
+
+设计基线日期：2026-11-09。目标平台：Android；当前工程配置读取结果为应用 minSdk 29、compileSdk 36、targetSdk 36（后两项来自接手时 Flutter SDK 3.47.9 默认值），`capture_android` / `asr_android` 为 minSdk 29、compileSdk 36，`core` 为纯 JVM。应用的 compileSdk/targetSdk 随 Flutter SDK 变化，须在更换 SDK 或正式验收时重新核对；该配置读取不等同于最终 APK 或设备兼容性验证。
+

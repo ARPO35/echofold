@@ -87,7 +87,7 @@ Future<T?> showEchoDialog<T>({
     barrierLabel: '关闭',
     barrierColor: Colors.black54,
     transitionDuration: motion.quick,
-    pageBuilder: (BuildContext _, Animation<double> __, Animation<double> ___) =>
+    pageBuilder: (BuildContext _, Animation<double> _, Animation<double> _) =>
         builder(context),
     transitionBuilder:
         (BuildContext context, Animation<double> animation, Animation<double> _, Widget child) {

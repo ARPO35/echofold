@@ -10,7 +10,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../app/app_contract.dart';
+import '../../app/app_contract.dart' as contract;
 import '../../domain/models.dart';
 import '../motion/echo_motion.dart';
 import '../reading/segment_view.dart';
@@ -22,7 +22,7 @@ class TranscriptReader extends StatefulWidget {
     required this.controller,
   });
 
-  final EchoAppController controller;
+  final contract.EchoAppController controller;
 
   @override
   State<TranscriptReader> createState() => _TranscriptReaderState();
@@ -33,12 +33,12 @@ class _TranscriptReaderState extends State<TranscriptReader> {
   final GlobalKey _viewportKey = GlobalKey();
   final Map<String, GlobalKey> _segmentKeys = <String, GlobalKey>{};
 
-  List<SegmentViewData> _lastSegments = const <SegmentViewData>[];
+  List<contract.SegmentView> _lastSegments = const <contract.SegmentView>[];
   String? _lastPartialText;
   String _lastSessionId = '';
   bool _userScrolling = false;
 
-  EchoAppController get _controller => widget.controller;
+  contract.EchoAppController get _controller => widget.controller;
 
   @override
   void initState() {
@@ -66,7 +66,7 @@ class _TranscriptReaderState extends State<TranscriptReader> {
   }
 
   void _handleControllerChanged() {
-    final TranscriptUiState state = _controller.transcript;
+    final contract.TranscriptUiState state = _controller.transcript;
     final bool sessionChanged = state.sessionId != _lastSessionId;
     final bool contentChanged = sessionChanged ||
         !identical(state.segments, _lastSegments) ||
@@ -98,7 +98,7 @@ class _TranscriptReaderState extends State<TranscriptReader> {
     if (!_scroll.hasClients) {
       return;
     }
-    if (_controller.transcript.mode == ReadingMode.followBottom) {
+    if (_controller.transcript.mode == contract.ReadingMode.followBottom) {
       _scrollToBottom();
       return;
     }
@@ -251,7 +251,7 @@ class _TranscriptReaderState extends State<TranscriptReader> {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final TranscriptUiState state = _controller.transcript;
+    final contract.TranscriptUiState state = _controller.transcript;
     final bool hasPartial = state.livePartialText != null && state.livePartialText!.isNotEmpty;
     final bool isEmpty = state.segments.isEmpty && !hasPartial;
 
@@ -271,7 +271,7 @@ class _TranscriptReaderState extends State<TranscriptReader> {
                   itemCount: state.segments.length + (hasPartial ? 1 : 0),
                   itemBuilder: (BuildContext context, int index) {
                     if (index < state.segments.length) {
-                      final SegmentViewData segment = state.segments[index];
+                      final contract.SegmentView segment = state.segments[index];
                       return SegmentView(
                         key: _keyFor(segment.segment.id),
                         segment: segment,

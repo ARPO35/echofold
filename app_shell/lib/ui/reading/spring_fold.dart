@@ -8,6 +8,8 @@ library;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart' show SpringSimulation;
+import 'package:flutter/rendering.dart' show PaintingContext, RenderProxyBox;
 import 'package:flutter/scheduler.dart';
 
 import '../motion/echo_motion.dart';

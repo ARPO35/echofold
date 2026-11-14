@@ -83,7 +83,9 @@ class FinalSources extends Table {
   TextColumn get id => text()();
   TextColumn get sessionId =>
       text().references(Sessions, #id, onDelete: KeyAction.cascade)();
-  TextColumn get text => text()();
+  /// 避开 Table.text 构建器；保留 SQLite 列名与 JSON 键。
+  @JsonKey('text')
+  TextColumn get text$ => text().named('text')();
   IntColumn get finalizedAtUtc => integer()();
   IntColumn get captureStartedMonoNs => integer()();
   IntColumn get captureEndedMonoNs => integer()();
@@ -141,7 +143,9 @@ class Versions extends Table {
       text().references(Segments, #id, onDelete: KeyAction.cascade)();
   TextColumn get kind => text()();
   IntColumn get layer => integer()();
-  TextColumn get text => text()();
+  /// 避开 Table.text 构建器；保留 SQLite 列名与 JSON 键。
+  @JsonKey('text')
+  TextColumn get text$ => text().named('text')();
   TextColumn get parentVersionId => text().nullable()();
   TextColumn get modelId => text().nullable()();
   TextColumn get modelVersion => text().nullable()();
@@ -172,7 +176,9 @@ class Artifacts extends Table {
       text().references(Segments, #id, onDelete: KeyAction.cascade).nullable()();
   IntColumn get layer => integer()();
   TextColumn get state => text()();
-  TextColumn get text => text()();
+  /// 避开 Table.text 构建器；保留 SQLite 列名与 JSON 键。
+  @JsonKey('text')
+  TextColumn get text$ => text().named('text')();
 
   /// 有序 `SourceVersionRef[]` JSON。
   TextColumn get sourceVersions => text()();
