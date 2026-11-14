@@ -62,6 +62,13 @@ final class EchoMotion {
   final SpringDescription spring;
   final SpringDescription swipeSpring;
 
+  /// 通用按压幅度；减少动态效果时不缩放，也不改变圆角。
+  double get pressScale => reduceMotion ? 1 : 0.96;
+  double get pressCornerFactor => reduceMotion ? 1 : 0.9;
+
+  /// 按压状态层仅表达触碰，不表示业务动作已执行。
+  double get pressStateOpacity => 0.08;
+
   /// 标题替换时的轻微纵向位移（逻辑像素）。
   final double titleShift;
 

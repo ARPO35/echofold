@@ -77,6 +77,17 @@ Future<int> _leftEdge(WidgetTester tester) async {
   return 400;
 }
 
+Future<int> _maxAlphaAt(WidgetTester tester, int x) async {
+  final Uint8List bytes = await _pixels(tester);
+  int maximum = 0;
+  for (int y = 0; y < 72; y++) {
+    maximum = maximum > bytes[(y * 400 + x) * 4 + 3]
+        ? maximum
+        : bytes[(y * 400 + x) * 4 + 3];
+  }
+  return maximum;
+}
+
 void main() {
   for (final int frameMicros in <int>[10000, 8333]) {
     testWidgets('相邻 $frameMicrosµs 帧之间真实像素向左移动，路径不重建',
@@ -115,12 +126,35 @@ void main() {
     });
   }
 
+  testWidgets('波形使用亮前景且边缘渐隐固定于画布，暂停平滑降低强调',
+      (WidgetTester tester) async {
+    await _mount(tester, _points(1400));
+    await tester.pumpAndSettle();
+    final int left = await _maxAlphaAt(tester, 2);
+    final int middle = await _maxAlphaAt(tester, 180);
+    final int right = await _maxAlphaAt(tester, 398);
+    expect(middle, greaterThan(left));
+    expect(middle, greaterThan(right));
+    final Uint8List active = await _pixels(tester);
+    await _mount(tester, _points(1400), frozen: true);
+    await tester.pump(const Duration(milliseconds: 80));
+    final Uint8List fading = await _pixels(tester);
+    expect(fading, isNot(orderedEquals(active)));
+    await tester.pumpAndSettle();
+    final Uint8List frozen = await _pixels(tester);
+    expect(frozen, isNot(orderedEquals(active)));
+    await tester.pump(const Duration(minutes: 1));
+    expect(await _pixels(tester), orderedEquals(frozen));
+    expect(tester.binding.transientCallbackCount, 0);
+  });
+
   testWidgets('暂停冻结像素，长时间后恢复只推进当前帧',
       (WidgetTester tester) async {
     final List<AmplitudePoint> points = _points(400);
     await _mount(tester, points);
     await tester.pump(const Duration(milliseconds: 20));
     await _mount(tester, points, frozen: true);
+    await tester.pumpAndSettle();
     final Uint8List frozen = await _pixels(tester);
     final int edge = await _leftEdge(tester);
     await tester.pump(const Duration(minutes: 2));

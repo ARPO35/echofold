@@ -31,10 +31,11 @@ class AmplitudeStrip extends StatefulWidget {
 }
 
 class _AmplitudeStripState extends State<AmplitudeStrip>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static const int _displayLagMs = 100;
 
   late final Ticker _ticker;
+  late final AnimationController _emphasis;
   final ValueNotifier<double> _cursorMs = ValueNotifier<double>(0);
   Path _path = Path();
   Size _pathSize = Size.zero;
@@ -50,6 +51,11 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick);
+    _emphasis = AnimationController(
+      vsync: this,
+      value: widget.frozen ? 0.38 : 1,
+      lowerBound: 0.38,
+    );
     final AppLifecycleState? lifecycle = WidgetsBinding.instance.lifecycleState;
     _appResumed = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
@@ -62,6 +68,7 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
     _reduceMotion = EchoMotion.of(context).reduceMotion;
     _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
     _syncTicker();
+    _syncEmphasis();
   }
 
   @override
@@ -74,7 +81,10 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
     if (oldWidget.window != widget.window || oldWidget.height != widget.height) {
       _rebuildPath(_pathSize);
     }
-    if (oldWidget.frozen != widget.frozen) _syncTicker();
+    if (oldWidget.frozen != widget.frozen) {
+      _syncTicker();
+      _syncEmphasis();
+    }
   }
 
   @override
@@ -141,6 +151,17 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
     }
   }
 
+  void _syncEmphasis() {
+    final double target = widget.frozen ? 0.38 : 1;
+    if (_reduceMotion) {
+      _emphasis.stop();
+      _emphasis.value = target;
+    } else if (_emphasis.value != target) {
+      _emphasis.animateTo(target,
+          duration: EchoMotion.of(context).base, curve: Curves.easeOut);
+    }
+  }
+
   void _rebuildPath(Size size) {
     if (!size.width.isFinite ||
         !size.height.isFinite ||
@@ -162,7 +183,7 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    final Color color = widget.frozen ? scheme.onSurfaceVariant : scheme.error;
+    final Color color = scheme.onSurface;
     final double height = widget.height.isFinite && widget.height > 0
         ? widget.height
         : 0;
@@ -188,7 +209,8 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
                     firstCapturedMs: _firstCapturedMs,
                     windowMs: widget.window.inMilliseconds,
                     color: color,
-                    frozen: widget.frozen,
+                    emphasis: _emphasis,
+                    size: size,
                   ),
                 ),
               ),
@@ -203,6 +225,7 @@ class _AmplitudeStripState extends State<AmplitudeStrip>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker.dispose();
+    _emphasis.dispose();
     _cursorMs.dispose();
     super.dispose();
   }
@@ -215,27 +238,36 @@ final class _AmplitudePainter extends CustomPainter {
     required this.firstCapturedMs,
     required this.windowMs,
     required this.color,
-    required this.frozen,
-  }) : baseline = (Paint()
-         ..color = color.withValues(alpha: frozen ? 0.12 : 0.22)
-         ..strokeWidth = 1),
-       envelope = (Paint()
-         ..color = color.withValues(alpha: frozen ? 0.32 : 0.9)
-         ..style = PaintingStyle.fill),
-       super(repaint: cursor);
+    required this.emphasis,
+    required Size size,
+  }) : baseline = (Paint()..strokeWidth = 1),
+       envelope = (Paint()..style = PaintingStyle.fill),
+       super(repaint: Listenable.merge(<Listenable>[cursor, emphasis])) {
+    // Shader 只在尺寸或样式变化时创建；采样平移不会带动屏幕两侧的渐隐。
+    final Shader shader = LinearGradient(
+      colors: <Color>[
+        color.withValues(alpha: 0), color, color, color.withValues(alpha: 0),
+      ],
+      stops: const <double>[0, 0.22, 0.78, 1],
+    ).createShader(Offset.zero & size);
+    baseline.shader = shader;
+    envelope.shader = shader;
+  }
 
   final Path path;
   final ValueListenable<double> cursor;
   final int? firstCapturedMs;
   final int windowMs;
   final Color color;
-  final bool frozen;
+  final Animation<double> emphasis;
   final Paint baseline;
   final Paint envelope;
 
   @override
   void paint(Canvas canvas, Size size) {
     final double mid = size.height / 2;
+    baseline.color = color.withValues(alpha: emphasis.value * 0.16);
+    envelope.color = color.withValues(alpha: emphasis.value);
     canvas.drawLine(Offset(0, mid), Offset(size.width, mid), baseline);
     if (firstCapturedMs == null) return;
 
@@ -244,7 +276,10 @@ final class _AmplitudePainter extends CustomPainter {
         size.width - (cursor.value - firstCapturedMs!) * pixelsPerMs;
     canvas.save();
     canvas.translate(translation, 0);
-    canvas.drawPath(path, envelope);
+    canvas.clipPath(path);
+    // clipPath 已固定裁切区域；恢复画布坐标后绘制，渐变与游标完全解耦。
+    canvas.translate(-translation, 0);
+    canvas.drawRect(Offset.zero & size, envelope);
     canvas.restore();
   }
 
@@ -253,6 +288,5 @@ final class _AmplitudePainter extends CustomPainter {
       !identical(oldDelegate.path, path) ||
       oldDelegate.firstCapturedMs != firstCapturedMs ||
       oldDelegate.windowMs != windowMs ||
-      oldDelegate.color != color ||
-      oldDelegate.frozen != frozen;
+      oldDelegate.color != color;
 }

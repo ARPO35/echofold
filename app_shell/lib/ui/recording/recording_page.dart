@@ -7,6 +7,8 @@ import 'package:flutter/physics.dart';
 import '../../app/app_contract.dart';
 import '../../domain/models.dart';
 import '../motion/echo_motion.dart';
+import '../motion/echo_press.dart';
+import 'recording_action_shape.dart';
 import 'amplitude_strip.dart';
 import 'recording_controller.dart';
 
@@ -27,6 +29,9 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
   double _gestureTravel = 0;
   bool _confirming = false;
   bool _dragEnabled = false;
+  int _destination = 1;
+  final Set<int> _visiblePages = <int>{1};
+  bool _active = true;
 
   @override
   void initState() {
@@ -69,6 +74,19 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
   }
 
   @override
+  void deactivate() {
+    // 子手势识别器可能在卸载时才发送取消，此时不能再读 context 或启动动画。
+    _active = false;
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _active = true;
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_changed);
@@ -85,12 +103,14 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
         title: const Text('仅录音'),
         content: const Text('当前不使用转写模型。开始后只采集并保存音频。'),
         actions: <Widget>[
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton.icon(
+          EchoPress(child: TextButton(
+            onPressed: () => Navigator.pop(context, false), child: const Text('取消'),
+          )),
+          EchoPress(child: FilledButton.icon(
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.mic),
             label: const Text('开始仅录音'),
-          ),
+          )),
         ],
       ),
     );
@@ -106,6 +126,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
   }
 
   void _animateBack(double velocity) {
+    if (!_active || !mounted) return;
     final EchoMotion motion = EchoMotion.of(context);
     _slide.stop();
     if (motion.reduceMotion) {
@@ -155,42 +176,188 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
     return '$hours:$minutes:$remainder';
   }
 
+  Widget _changingText(String text, {Key? key, TextStyle? style}) {
+    final EchoMotion motion = EchoMotion.of(context);
+    if (motion.reduceMotion) return Text(text, key: key, style: style);
+    return KeyedSubtree(
+      key: key,
+      child: AnimatedSize(
+        duration: motion.base,
+        curve: motion.geometryCurve,
+        alignment: Alignment.centerLeft,
+        child: AnimatedSwitcher(
+          duration: motion.fade,
+          switchInCurve: motion.fadeCurve,
+          switchOutCurve: motion.fadeCurve,
+          child: Text(text, key: ValueKey<String>(text), style: style),
+        ),
+      ),
+    );
+  }
+
+  Widget _readingPage({required Key key, required List<Widget> children}) =>
+      EchoPress(
+        scale: 0.996,
+        borderRadius: BorderRadius.circular(24),
+        child: SingleChildScrollView(
+          key: key,
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
+          ),
+        ),
+      );
+
+  Widget _errorPanel(RecordingUiState state) {
+    final RecordingController controller = widget.controller;
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final EchoMotion motion = EchoMotion.of(context);
+    final AppFailure? failure = state.failure;
+    final Widget panel = failure == null && state.storageWarning == null
+        ? const SizedBox.shrink(key: ValueKey<String>('no-error'))
+        : AnimatedContainer(
+                key: ValueKey<String>('${failure?.code}:${state.storageWarning}'),
+                duration: motion.base,
+                padding: const EdgeInsets.all(16),
+                margin: const EdgeInsets.only(top: 20),
+                decoration: BoxDecoration(
+                  color: colors.errorContainer,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    if (state.storageWarning case final String warning)
+                      Text(warning, style: TextStyle(color: colors.onErrorContainer)),
+                    if (failure != null)
+                      Text(failure.message, key: const Key('recording-error'),
+                          style: TextStyle(color: colors.onErrorContainer)),
+                    if (controller.permanentlyDenied)
+                      EchoPress(child: TextButton.icon(
+                        onPressed: controller.busy ? null : controller.openSettings,
+                        icon: const Icon(Icons.settings), label: const Text('打开系统设置'),
+                      )),
+                    if (!controller.connected || !controller.ready)
+                      EchoPress(child: TextButton.icon(
+                        onPressed: controller.busy ? null : controller.connect,
+                        icon: const Icon(Icons.sync), label: const Text('重新连接'),
+                      )),
+                  ],
+                ),
+              );
+    if (motion.reduceMotion) return panel;
+    return AnimatedSize(
+      duration: motion.base,
+      curve: motion.geometryCurve,
+      alignment: Alignment.topCenter,
+      child: AnimatedSwitcher(duration: motion.fade, child: panel),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final RecordingUiState state = widget.controller.state;
-    final bool active = state.state == SessionState.recording || state.state == SessionState.paused || state.state == SessionState.lowStoragePaused || (state.state == SessionState.failed && state.sessionId != null);
-    final bool canStop = widget.controller.canStop;
-    final bool canMain = !_confirming && (widget.controller.canStart || widget.controller.canPause || widget.controller.canResume);
+    final RecordingController controller = widget.controller;
+    final RecordingUiState state = controller.state;
+    final bool canStop = controller.canStop;
+    final bool canMain = !_confirming && (controller.canStart || controller.canPause || controller.canResume);
     final bool failedToSave = state.state == SessionState.failed && state.sessionId != null;
     final ColorScheme colors = Theme.of(context).colorScheme;
+    final TextTheme text = Theme.of(context).textTheme;
+    final EchoMotion motion = EchoMotion.of(context);
+    final double phase = state.state == SessionState.recording ? 1 : state.state == SessionState.paused ? 2 : 0;
+    final String actionLabel = state.state == SessionState.recording
+        ? '暂停录音；向左拖动结束并保存'
+        : state.state == SessionState.paused
+            ? '继续录音；向左拖动结束并保存' : '开始仅录音';
+    final String hint = canStop ? '向左拖动按钮，结束并保存'
+        : state.state == SessionState.idle ? '点击按钮开始仅录音'
+        : controller.busy ? '正在确认录音状态…' : '请先处理下方提示';
+
+    final List<Widget> pages = <Widget>[
+      _readingPage(key: const PageStorageKey<String>('recording-list-scroll'), children: <Widget>[
+        Text('录音列表', style: text.headlineLarge),
+        const SizedBox(height: 24),
+        if (state.sessionId != null) ...<Widget>[
+          Text('当前会话', style: text.titleMedium),
+          const SizedBox(height: 12),
+          SelectableText(state.sessionId!),
+          const SizedBox(height: 12),
+          Text('${_statusLabel(state)} · ${_duration(state.elapsedMs)}', style: text.titleLarge),
+          const SizedBox(height: 12),
+          Text('仅录音 · 音频保存在此设备', style: text.bodyLarge),
+        ] else
+          Text('当前没有进行中的录音', style: text.titleLarge),
+        const SizedBox(height: 32),
+        Text('历史记录尚未接入', style: text.titleLarge),
+        const SizedBox(height: 12),
+        Text('这里仅显示原生录音服务返回的当前会话，暂不提供历史录音列表或播放。', style: text.bodyLarge),
+      ]),
+      _readingPage(key: const PageStorageKey<String>('recording-transcript-scroll'), children: <Widget>[
+        Text('只录下此刻，\n安心留在设备。', style: text.headlineLarge?.copyWith(height: 1.5)),
+        const SizedBox(height: 28),
+        Text('本地转写模型尚未接入', style: text.titleLarge),
+        const SizedBox(height: 12),
+        Text('当前为仅录音模式。这里尚无转写内容，开始录音后只采集并保存音频。',
+            style: text.bodyLarge?.copyWith(height: 1.8, color: colors.onSurfaceVariant)),
+        const SizedBox(height: 32),
+        EchoPress(child: OutlinedButton.icon(
+          key: const Key('recording-stop-button'),
+          onPressed: canStop ? controller.stop : null,
+          icon: const Icon(Icons.stop_rounded),
+          label: Text(controller.recoveryRequired ? '录音待恢复' : failedToSave ? '重试保存' : '结束并保存'),
+        )),
+        _errorPanel(state),
+      ]),
+      _readingPage(key: const PageStorageKey<String>('recording-settings-scroll'), children: <Widget>[
+        Text('设置', style: text.headlineLarge),
+        const SizedBox(height: 28),
+        Text('当前模式', style: text.titleMedium),
+        const SizedBox(height: 8),
+        Text('仅录音', style: text.titleLarge),
+        const SizedBox(height: 8),
+        Text('本地转写模型尚未接入；没有可启用的转写开关。', style: text.bodyLarge),
+        const SizedBox(height: 24),
+        EchoPress(child: OutlinedButton.icon(
+          key: const Key('recording-permission-settings'),
+          onPressed: controller.busy ? null : controller.openSettings,
+          icon: const Icon(Icons.mic_outlined),
+          label: const Text('管理系统麦克风权限'),
+        )),
+        const SizedBox(height: 28),
+        Text('外观与动效', style: text.titleMedium),
+        const SizedBox(height: 12),
+        Text('Material Design 3 · ${Theme.of(context).brightness == Brightness.dark ? '深色' : '浅色'}主题', style: text.bodyLarge),
+        const SizedBox(height: 8),
+        Text(motion.reduceMotion ? '已遵循系统：减少动态效果' : '动态效果已开启；遵循系统减少动态效果设置', style: text.bodyLarge),
+      ]),
+    ];
 
     return Scaffold(
-      appBar: AppBar(title: const Text('EchoFold')),
       body: SafeArea(
-        child: LayoutBuilder(builder: (BuildContext context, BoxConstraints constraints) {
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: math.max(0, constraints.maxHeight - 48)),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
-                const Text('录音采集', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 8),
-                Text(_statusLabel(state), key: const Key('recording-status'), style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 20),
-                LayoutBuilder(builder: (BuildContext context, BoxConstraints box) {
-                  const double buttonSize = 96;
+        child: Column(children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+            child: Material(
+              color: colors.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(44),
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: LayoutBuilder(builder: (BuildContext context, BoxConstraints box) {
+                  const double buttonSize = 64;
                   _trackWidth = math.max(0, box.maxWidth - buttonSize);
-                  return SizedBox(
-                    height: buttonSize,
-                    child: Stack(alignment: Alignment.center, children: <Widget>[
-                      Positioned(left: 0, right: buttonSize + 12, child: IgnorePointer(
-                        child: AmplitudeStrip(
+                  return SizedBox(height: buttonSize, child: Stack(
+                    alignment: Alignment.center,
+                    children: <Widget>[
+                      Positioned(left: 8, right: buttonSize + 12,
+                        child: EchoPress(scale: 0.996, child: AmplitudeStrip(
                           key: ValueKey<String?>(state.sessionId),
                           amplitudes: state.amplitudes,
-                          frozen: widget.controller.waveformFrozen,
-                          height: 72,
-                        ),
-                      )),
+                          frozen: controller.waveformFrozen,
+                          height: 48,
+                        )),
+                      ),
                       Positioned(right: _dragOffset.clamp(0, _trackWidth), child: GestureDetector(
                         key: const Key('recording-drag-button'),
                         dragStartBehavior: DragStartBehavior.down,
@@ -200,55 +367,105 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
                         onHorizontalDragCancel: () { _dragEnabled = false; _animateBack(0); },
                         onHorizontalDragEnd: (DragEndDetails details) => _dragEnd(details, canStop),
                         child: Semantics(
-                          button: true,
-                          enabled: canMain,
-                          label: state.state == SessionState.recording ? '暂停录音；向左拖动结束并保存' : state.state == SessionState.paused ? '继续录音；向左拖动结束并保存' : '开始仅录音',
-                          child: SizedBox.square(dimension: buttonSize, child: FilledButton(
-                            key: const Key('recording-main-action'),
-                            style: FilledButton.styleFrom(shape: const CircleBorder(), backgroundColor: colors.error, foregroundColor: colors.onError),
-                            onPressed: canMain ? _mainAction : null,
-                            child: Icon(state.state == SessionState.recording ? Icons.pause : state.state == SessionState.paused ? Icons.play_arrow : Icons.mic, size: 42),
-                          )),
+                          button: true, enabled: canMain, label: actionLabel,
+                          child: EchoPress(borderRadius: BorderRadius.circular(32),
+                            child: TweenAnimationBuilder<double>(
+                              tween: Tween<double>(end: phase == 1 ? 22 : 32),
+                              duration: motion.base,
+                              curve: motion.geometryCurve,
+                              builder: (BuildContext context, double radius, Widget? child) =>
+                                  SizedBox.square(dimension: buttonSize, child: FilledButton(
+                                    key: const Key('recording-main-action'),
+                                    style: FilledButton.styleFrom(
+                                      padding: EdgeInsets.zero,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius)),
+                                    ),
+                                    onPressed: canMain ? _mainAction : null,
+                                    child: child!,
+                                  )),
+                              child: RepaintBoundary(
+                                key: const Key('recording-shape-image'),
+                                child: RecordingActionShape(phase: phase,
+                                    color: canMain ? colors.onPrimary : colors.onSurface.withValues(alpha: 0.38)),
+                              ),
+                            ),
+                          ),
                         ),
                       )),
-                    ]),
-                  );
+                    ],
+                  ));
                 }),
-                const SizedBox(height: 12),
-                Text(canStop ? '向左拖动红色按钮，结束并保存' : state.state == SessionState.idle ? '点击红色按钮开始仅录音' : widget.controller.busy ? '正在确认录音状态…' : '请先处理下方提示', textAlign: TextAlign.right, style: Theme.of(context).textTheme.bodySmall),
-                const SizedBox(height: 22),
-                Center(child: FittedBox(fit: BoxFit.scaleDown, child: Text(_duration(state.elapsedMs), key: const Key('recording-duration'), style: const TextStyle(fontSize: 38, fontFeatures: <FontFeature>[FontFeature.tabularFigures()])))),
-                const SizedBox(height: 22),
-                OutlinedButton.icon(
-                  key: const Key('recording-stop-button'),
-                  onPressed: canStop ? widget.controller.stop : null,
-                  icon: const Icon(Icons.stop),
-                  label: Text(widget.controller.recoveryRequired ? '录音待恢复' : failedToSave ? '重试保存' : '结束并保存'),
-                ),
-                if (state.storageWarning case final String warning) ...<Widget>[
-                  const SizedBox(height: 12),
-                  Text(warning, style: TextStyle(color: colors.error)),
-                ],
-                if (state.failure case final AppFailure failure) ...<Widget>[
-                  const SizedBox(height: 12),
-                  Text(failure.message, key: const Key('recording-error'), style: TextStyle(color: colors.error)),
-                  if (widget.controller.permanentlyDenied)
-                    Align(alignment: Alignment.centerLeft, child: TextButton.icon(
-                      onPressed: widget.controller.busy ? null : widget.controller.openSettings,
-                      icon: const Icon(Icons.settings), label: const Text('打开系统设置'),
-                    )),
-                  if (!widget.controller.connected || !widget.controller.ready)
-                    Align(alignment: Alignment.centerLeft, child: TextButton.icon(
-                      onPressed: widget.controller.busy ? null : widget.controller.connect,
-                      icon: const Icon(Icons.sync), label: const Text('重新连接'),
-                    )),
-                ],
-                const SizedBox(height: 24),
-                Text(active ? '录音仅保存在此设备' : '尚未开始录音', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
-              ]),
+              ),
             ),
-          );
-        }),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 12, 28, 0),
+            child: Wrap(alignment: WrapAlignment.spaceBetween, spacing: 20, runSpacing: 4,
+              children: <Widget>[
+                Semantics(liveRegion: true, child: _changingText(_statusLabel(state),
+                    key: const Key('recording-status'), style: text.bodyMedium)),
+                Text(_duration(state.elapsedMs), key: const Key('recording-duration'),
+                    style: text.bodyMedium?.copyWith(fontFeatures: const <FontFeature>[FontFeature.tabularFigures()])),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+            child: Align(alignment: Alignment.centerLeft,
+              child: _changingText(hint, style: text.bodySmall?.copyWith(color: colors.onSurfaceVariant))),
+          ),
+          Expanded(child: Stack(fit: StackFit.expand, children: <Widget>[
+            for (int i = 0; i < pages.length; i++)
+              Offstage(
+                offstage: !_visiblePages.contains(i),
+                child: IgnorePointer(ignoring: i != _destination,
+                  child: ExcludeSemantics(excluding: i != _destination,
+                    child: TickerMode(enabled: _visiblePages.contains(i),
+                      child: AnimatedOpacity(
+                        opacity: i == _destination ? 1 : 0,
+                        duration: motion.fade,
+                        curve: motion.fadeCurve,
+                        onEnd: () {
+                          if (mounted && i != _destination) {
+                            setState(() => _visiblePages.remove(i));
+                          }
+                        },
+                        child: AnimatedSlide(
+                          offset: i == _destination || motion.reduceMotion ? Offset.zero : Offset(i < _destination ? -0.035 : 0.035, 0),
+                          duration: motion.base,
+                          curve: motion.geometryCurve,
+                          child: pages[i],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ])),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(40),
+              child: EchoPress(
+                scale: 0.99,
+                child: NavigationBar(
+                  selectedIndex: _destination,
+                  onDestinationSelected: (int value) => setState(() {
+                    if (motion.reduceMotion) _visiblePages.clear();
+                    _visiblePages.add(value);
+                    _destination = value;
+                  }),
+                  animationDuration: motion.base,
+                  destinations: const <Widget>[
+                    NavigationDestination(key: Key('recording-nav-list'), icon: Icon(Icons.view_list_outlined), selectedIcon: Icon(Icons.view_list_rounded), label: '列表'),
+                    NavigationDestination(key: Key('recording-nav-record'), icon: Icon(Icons.mic_none_rounded), selectedIcon: Icon(Icons.mic_rounded), label: '录音'),
+                    NavigationDestination(key: Key('recording-nav-settings'), icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings_rounded), label: '设置'),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ]),
       ),
     );
   }

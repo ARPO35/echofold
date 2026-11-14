@@ -1,0 +1,10 @@
+schema: spec-driven
+created: 2026-11-15
+goal: 确立全项目 Material Design 3 语义设计基线并落实真实录制界面与最小三页导航
+affected_areas:
+  - design-system
+  - flutter-ui
+  - recording-surface
+  - navigation
+  - accessibility
+x-status: implementation-local-verified-device-and-strict-validation-pending

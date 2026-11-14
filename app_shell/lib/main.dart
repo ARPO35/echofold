@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'ui/recording/recording_controller.dart';
 import 'ui/recording/recording_page.dart';
-
+import 'ui/theme/echo_theme.dart';
 void main() {
   runApp(const EchoFoldApp());
 }
@@ -27,10 +27,7 @@ class _EchoFoldAppState extends State<EchoFoldApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'EchoFold',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFB3261E)),
-        useMaterial3: true,
-      ),
+      theme: EchoTheme.dark,
       home: RecordingPage(controller: _controller),
     );
   }

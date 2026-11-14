@@ -1,8 +1,14 @@
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:echofold_app/domain/models.dart';
+import 'package:echofold_app/native/platform_contracts.dart';
+import 'package:echofold_app/ui/recording/recording_platform.dart';
 import 'package:echofold_app/ui/recording/amplitude_strip.dart';
 import 'package:echofold_app/ui/recording/recording_controller.dart';
 import 'package:echofold_app/ui/recording/recording_page.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_recording_platform.dart';
@@ -41,6 +47,37 @@ Future<void> _swipe(WidgetTester tester, double distance, Duration duration) asy
   }
   await gesture.up();
   await tester.pumpAndSettle();
+}
+
+Future<Uint8List> _shapePixels(WidgetTester tester) async {
+  final RenderRepaintBoundary boundary = tester.renderObject<RenderRepaintBoundary>(
+    find.byKey(const Key('recording-shape-image')),
+  );
+  return (await tester.runAsync<Uint8List>(() async {
+    final ui.Image image = await boundary.toImage(pixelRatio: 1);
+    try {
+      return (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!
+          .buffer.asUint8List();
+    } finally {
+      image.dispose();
+    }
+  }))!;
+}
+
+final class _CountingPlatform implements RecordingPlatform {
+  final FakeRecordingPlatform delegate = FakeRecordingPlatform();
+  int snapshots = 0;
+
+  @override
+  Stream<Object?> get sessions => delegate.sessions;
+  @override
+  Stream<Object?> get amplitudes => delegate.amplitudes;
+
+  @override
+  Future<Map<Object?, Object?>> invoke(String method, [Map<String, Object?>? arguments]) {
+    if (method == PlatformMethods.recordingSnapshot) snapshots++;
+    return delegate.invoke(method, arguments);
+  }
 }
 
 void main() {
@@ -134,10 +171,98 @@ void main() {
     await _swipe(tester, 48, const Duration(milliseconds: 80));
     expect(tester.getCenter(find.byKey(_dragButton)), rest);
     expect(platform.commands, isEmpty);
-    // 320 - 两侧48 - 按钮96 = 176，四成70.4，小于96dp。
+    // 可用轨道四成小于 96dp，80dp 的实际位移足以提交。
     await _swipe(tester, 80, const Duration(seconds: 1));
     expect(platform.commands, <String>['STOP']);
     expect(tester.getCenter(find.byKey(_dragButton)), rest);
+  });
+
+  testWidgets('取消按压反馈会回弹且不开始、不暂停、不保存', (WidgetTester tester) async {
+    await _mount(tester, controller);
+    final Rect rest = tester.getRect(find.byKey(_main));
+    TestGesture gesture = await tester.startGesture(rest.center);
+    // 首帧建立 ticker 起点，随后才推进按下的可见形变。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(tester.getRect(find.byKey(_main)).width, lessThan(rest.width));
+    await gesture.cancel();
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(platform.starts, 0);
+    expect(tester.getRect(find.byKey(_main)), rest);
+    await _start(tester);
+    gesture = await tester.startGesture(tester.getCenter(find.byKey(_main)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    await gesture.cancel();
+    await tester.pumpAndSettle();
+    expect(platform.commands, isEmpty);
+    expect(controller.state.state, SessionState.recording);
+  });
+
+  testWidgets('导航保留会话和阅读位置，不重连或暂停，权限入口真实可操作', (WidgetTester tester) async {
+    final _CountingPlatform counted = _CountingPlatform();
+    final RecordingController retained = RecordingController(platform: counted);
+    addTearDown(() async { retained.dispose(); await counted.delegate.dispose(); });
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await _mount(tester, retained, textScale: 1.5);
+    await _start(tester);
+    final int connections = counted.snapshots;
+    await tester.drag(find.byKey(const PageStorageKey<String>('recording-transcript-scroll')), const Offset(0, -120));
+    await tester.pumpAndSettle();
+    final ScrollableState reading = tester.state<ScrollableState>(find.descendant(
+      of: find.byKey(const PageStorageKey<String>('recording-transcript-scroll')),
+      matching: find.byType(Scrollable),
+    ));
+    final double offset = reading.position.pixels;
+    expect(offset, greaterThan(0));
+    await tester.tap(find.byKey(const Key('recording-nav-list')));
+    await tester.pumpAndSettle();
+    counted.delegate.publish('RECORDING', capturedMs: 4567);
+    await tester.pumpAndSettle();
+    expect(find.text('session-1'), findsOneWidget);
+    expect(find.textContaining('00:00:04'), findsNWidgets(2));
+    await tester.tap(find.byKey(const Key('recording-nav-settings')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('recording-permission-settings')));
+    await tester.tap(find.byKey(const Key('recording-permission-settings')));
+    await tester.pumpAndSettle();
+    expect(counted.delegate.settingsOpened, 1);
+    await tester.tap(find.byKey(const Key('recording-nav-record')));
+    await tester.pumpAndSettle();
+    expect(reading.position.pixels, offset);
+    expect(retained.state.sessionId, 'session-1');
+    expect(counted.snapshots, connections);
+    expect(counted.delegate.commands, isEmpty);
+    expect(counted.delegate.starts, 1);
+  });
+
+  testWidgets('状态轮廓连续变形并支持快速反向，减少动画立即到终态', (WidgetTester tester) async {
+    await _mount(tester, controller);
+    await _start(tester);
+    final Uint8List recording = await _shapePixels(tester);
+    platform.publish('PAUSED');
+    await tester.pump();
+    expect(await _shapePixels(tester), orderedEquals(recording));
+    await tester.pump(const Duration(milliseconds: 60));
+    final Uint8List intermediate = await _shapePixels(tester);
+    expect(intermediate, isNot(orderedEquals(recording)));
+    platform.publish('RECORDING');
+    await tester.pump();
+    expect(await _shapePixels(tester), orderedEquals(intermediate));
+    await tester.pumpAndSettle();
+    expect(await _shapePixels(tester), orderedEquals(recording));
+    await _mount(tester, controller, reduceMotion: true);
+    platform.publish('PAUSED');
+    await tester.pump();
+    final Uint8List paused = await _shapePixels(tester);
+    expect(paused, isNot(orderedEquals(recording)));
+    await tester.pump(const Duration(seconds: 1));
+    expect(await _shapePixels(tester), orderedEquals(paused));
+    expect(tester.binding.transientCallbackCount, 0);
   });
 
   testWidgets('拖动波形不会结束录音', (WidgetTester tester) async {
