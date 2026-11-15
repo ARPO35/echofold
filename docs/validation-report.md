@@ -246,3 +246,21 @@ OpenSpec 已安装 shim 的实际入口缺失，strict 未执行，未安装全�
 补充文件与索引完整性证据：旧 chunks 记录前后按 id 逐项比较，`jq all` 返回 `true`，旧记录全部相等。新会话两块文件的 `sha256sum` 均与原生索引 checksum 一致：块 0 为 `e1b5c0888abfdd309b850ac7d09be655646b1cb5b98549ad9ab6f90b95f008e6`，块 1 为 `07478c8a70f628e6db33ab1553005d554a7b0dd9f937d3b8383bc8edbca0eea9`。这证明本次所查真实文件与索引匹配、旧块记录未变，不代表完整崩溃恢复验收。
 
 最终本机定向验证由主 agent 执行：`flutter test --no-pub test/recording` 输出 `+41 All tests passed`，`flutter analyze --no-pub` 输出 `No issues found`，均退出 0。该结果对应最终空闲显示与语义修复后的代码，仅证明录音目录定向测试和 Flutter analyzer 通过，不泛化为根 Makefile 全部门禁或整体任务完成。
+
+## 2026-11-15 转写阅读基础接线（未完成实时识别）
+
+本轮补充 Flutter TranscriptController、按会话重置的事件门控、Partial/FINAL/Health/GAP 阅读状态、录音页 Reader 接线；Android 增加有界事件缓存与 `asr_events` EventChannel，并补齐 GAP 序列化类型。队满拒绝新事件，消费者抛错保留未交付事件。生产录音服务尚未提供模型配置、租约和 PCM 到真实引擎的调用，因此不能声明已实现真实识别或进程恢复。当前阅读状态仅在内存中，尚未接入持久化恢复。
+
+Material 按钮主题补充至少 48dp 尺寸。模型不可用页面提供仅录音，重装与回滚未接入，保持禁用；已纠正历史证据可浏览的错误说明。历史查询、播放、完整设置仍未接入。
+
+实际验证：Flutter analyzer 输出 `No issues found`；修正测试后 `flutter test --no-pub test/recording test/native` 为 68 项通过。Python 使用 `uv run --no-project --offline --python 3.12 --directory tool/benchmark env PYTHONPATH=src python -m unittest discover -s tests -v`，1 项输入路径测试通过。首次 Python 导入失败已修复缺失的 ValidationError 定义。
+
+Android 使用已有 `/tmp/echofold-task10-central-mirror.init.gradle` 与 `--offline` 执行 `:app:assembleDebug :core:test`，11 秒成功；新增 AsrEventBufferTest 的队满、消费者失败和 GAP 往返测试随后通过。未使用镜像的首次离线构建因依赖仓库缓存身份不匹配失败。没有安装软件或修改全局配置。
+
+APK 已在 NX712J 执行 `adb install -r` 成功，冷启动 `Status: ok`、3186ms。真实截图 `/tmp/echofold-current.png` 确认模型未接入说明、仅录音操作和三页导航显示；本轮未执行真实 ASR、音频采集回归或发布长测。所有完整项目验收保持未完成。后续按用户要求由主代理直接开发，不再委派子代理。
+
+后续核对发现 SherpaModelLayout 原来只读平铺目录，不能加载指定 IB-Robot bundle；已补固定 `artifacts/encoder`、`decoder`、`joiner`、`tokens` 四路径，并通过定向引擎测试。SessionAsrSink 不再提前拒绝 48kHz PCM，交由引擎按固定配置重采样；会话隔离与初始化失败测试通过。Flutter 新增 GAP/高世代切换回 generation 0 回归，4 项控制器测试通过，analyzer 无问题。
+
+实际下载到临时目录的工件：官方 sherpa-onnx 1.13.6 AAR SHA-256 `0012d9a28f15bd6fb966b62b70a75da3990512fdccce28b83098248ce4be1698`；模型仓库提交 `ef45908b6d6d293fc4100797488e95b2b08662ba` 的 encoder/decoder/joiner 与 Hugging Face LFS 哈希相符，tokens SHA-256 `ad0df596d9cc60c90795409549ccf7d1c4f901bdc060dd6b2b067d9ef2fddfaf`。工件尚未安装或用于真实识别，不作为质量证据。
+
+定向 Gradle 测试首次因根分区无空间失败；将本项目 `app_shell/build` 原样迁到 `/tmp/echofold-build-20261115` 并在原处留软链接后重试成功，未删除用户数据或全局缓存。该构建目录是临时存储，系统清理 `/tmp` 后需重新构建。

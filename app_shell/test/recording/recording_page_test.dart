@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:echofold_app/domain/models.dart';
 import 'package:echofold_app/native/platform_contracts.dart';
+import 'package:echofold_app/native/asr_event_bridge.dart';
 import 'package:echofold_app/ui/recording/recording_platform.dart';
 import 'package:echofold_app/ui/recording/amplitude_strip.dart';
 import 'package:echofold_app/ui/recording/recording_controller.dart';
@@ -26,7 +27,8 @@ Future<void> _mount(WidgetTester tester, RecordingController controller,
       ),
       child: child!,
     ),
-    home: RecordingPage(controller: controller),
+    home: RecordingPage(controller: controller,
+        asrBridge: AsrEventBridge(eventStream: const Stream<Object?>.empty())),
   ));
   await tester.pumpAndSettle();
 }
@@ -94,6 +96,7 @@ void main() {
   });
 
   testWidgets('开始必须显式确认仅录音，拒绝权限保持空闲并提供设置', (WidgetTester tester) async {
+
     platform.granted = false;
     platform.permanentlyDenied = true;
     await _mount(tester, controller);
@@ -101,7 +104,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(platform.permissions, 0);
     expect(platform.starts, 0);
-    expect(find.text('仅录音'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsOneWidget);
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
     expect(platform.permissions, 0);
@@ -113,6 +116,18 @@ void main() {
     await tester.tap(find.text('打开系统设置'));
     await tester.pumpAndSettle();
     expect(platform.settingsOpened, 1);
+  });
+  testWidgets('未接入模型时允许仅录音并禁用安装回滚', (WidgetTester tester) async {
+    await _mount(tester, controller);
+    expect(find.text('本地转写模型不可用'), findsOneWidget);
+    expect(find.byKey(const Key('model-only-recording')), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('model-only-recording'))).onPressed, isNotNull);
+    expect(tester.widget<OutlinedButton>(find.byKey(const Key('model-reinstall-unavailable'))).onPressed, isNull);
+    expect(tester.widget<OutlinedButton>(find.byKey(const Key('model-rollback-unavailable'))).onPressed, isNull);
+    await tester.tap(find.byKey(const Key('recording-nav-list')));
+    await tester.pumpAndSettle();
+    expect(find.text('录音列表'), findsOneWidget);
+    expect(find.text('历史记录尚未接入'), findsOneWidget);
   });
 
   testWidgets('按钮开始暂停继续，时长和波形由真实事件推进', (WidgetTester tester) async {

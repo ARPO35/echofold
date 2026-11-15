@@ -59,6 +59,8 @@ def _read_reference_rows(path: Path) -> list[dict[str, Any]]:
         )
     if not path.exists():
         raise ManifestError(f"参考转写文件不存在：{path}")
+    if not path.is_file():
+        raise ManifestError(f"参考转写路径不是文件：{path}")
 
     if suffix == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as handle:

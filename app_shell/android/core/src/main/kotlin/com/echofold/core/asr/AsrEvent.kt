@@ -9,6 +9,7 @@ enum class AsrEventKind(val wireName: String) {
     FINAL_CANDIDATE("finalCandidate"),
     FINAL("final"),
     HEALTH("health"),
+    GAP("gap"),
 }
 
 /** 稳定事件 ID 的构造规则：`sessionId:generation:kind:seq`。 */
@@ -146,6 +147,39 @@ sealed interface AsrEvent {
                 require(chunkId.isNotBlank()) { "chunkIds 元素不能为空白字符串" }
                 require(seen.add(chunkId)) { "chunkIds 不能包含重复值：$chunkId" }
             }
+        }
+    }
+
+    /** 已提交的缺口证据，展示字面量不作为识别文字传输。 */
+    @Serializable
+    @SerialName("gap")
+    data class Gap(
+        override val sessionId: String,
+        override val generation: Long,
+        override val seq: Long,
+        val segmentId: String,
+        val finalizedAtUtcMs: Long,
+        val captureStartedMonoNs: Long,
+        val captureEndedMonoNs: Long,
+        val capturedStartMs: Long,
+        val capturedEndMs: Long,
+        val gapReason: String,
+        val chunkIds: List<String>,
+        val modelId: String,
+        val modelVersion: String,
+        val lagMs: Long,
+        override val eventId: String = AsrEventIds.of(sessionId, generation, AsrEventKind.GAP, seq),
+    ) : AsrEvent {
+        override val kind: AsrEventKind get() = AsrEventKind.GAP
+        init {
+            requireSessionEvent(sessionId, generation, seq, eventId, kind)
+            require(segmentId.isNotBlank() && modelId.isNotBlank() && modelVersion.isNotBlank())
+            require(finalizedAtUtcMs >= 0 && lagMs >= 0)
+            require(captureStartedMonoNs >= 0 && captureEndedMonoNs >= captureStartedMonoNs)
+            require(capturedStartMs >= 0 && capturedEndMs > capturedStartMs)
+            require(gapReason == "ASR_OVERLOAD")
+            require(chunkIds.isNotEmpty() && chunkIds.all { it.isNotBlank() })
+            require(chunkIds.distinct().size == chunkIds.size)
         }
     }
 

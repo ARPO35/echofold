@@ -15,8 +15,10 @@ enum AsrEventKind {
   /// 已提交的不可变 FINAL 证据。
   finalEvent('final'),
 
-  /// 运行健康采样。
-  health('health');
+  health('health'),
+
+  /// ASR 积压跳读产生的不可变缺口证据。
+  gap('gap');
 
   const AsrEventKind(this.wireName);
 
@@ -109,6 +111,7 @@ sealed class AsrEvent {
         AsrEventKind.finalCandidate => AsrFinalCandidate._fromJson(json),
         AsrEventKind.finalEvent => AsrFinal._fromJson(json),
         AsrEventKind.health => AsrHealth._fromJson(json),
+        AsrEventKind.gap => AsrGap._fromJson(json),
       };
     } on ArgumentError catch (error) {
       throw FormatException('ASR 事件字段不合法：${error.message}');
@@ -125,6 +128,88 @@ sealed class AsrEvent {
         'sessionId': sessionId,
         'generation': generation,
         'seq': seq,
+      };
+}
+
+/// ASR 积压跳读产生的不可变 GAP 证据。
+final class AsrGap extends AsrEvent {
+  AsrGap({
+    required super.sessionId,
+    required super.generation,
+    required super.seq,
+    required this.segmentId,
+    required this.finalizedAtUtcMs,
+    required this.captureStartedMonoNs,
+    required this.captureEndedMonoNs,
+    required this.capturedStartMs,
+    required this.capturedEndMs,
+    required this.gapReason,
+    required this.chunkIds,
+    required this.modelId,
+    required this.modelVersion,
+    required this.lagMs,
+    super.eventId,
+  }) : super(kind: AsrEventKind.gap) {
+    if (segmentId.isEmpty || modelId.isEmpty || modelVersion.isEmpty) {
+      throw ArgumentError('GAP segmentId/modelId/modelVersion 不能为空');
+    }
+    if (gapReason != 'ASR_OVERLOAD' || chunkIds.isEmpty ||
+        chunkIds.any((String id) => id.trim().isEmpty) ||
+        chunkIds.toSet().length != chunkIds.length) {
+      throw ArgumentError('GAP reason/chunkIds 非法');
+    }
+    if (finalizedAtUtcMs < 0 || captureStartedMonoNs < 0 ||
+        captureEndedMonoNs < captureStartedMonoNs || capturedStartMs < 0 ||
+        capturedEndMs <= capturedStartMs || lagMs < 0) {
+      throw ArgumentError('GAP 时间区间或 lagMs 非法');
+    }
+  }
+
+  factory AsrGap._fromJson(Map<String, Object?> json) => AsrGap(
+        sessionId: _requireString(json, 'sessionId'),
+        generation: _requireInt(json, 'generation'),
+        seq: _requireInt(json, 'seq'),
+        eventId: _requireString(json, 'eventId'),
+        segmentId: _requireString(json, 'segmentId'),
+        finalizedAtUtcMs: _requireInt(json, 'finalizedAtUtcMs'),
+        captureStartedMonoNs: _requireInt(json, 'captureStartedMonoNs'),
+        captureEndedMonoNs: _requireInt(json, 'captureEndedMonoNs'),
+        capturedStartMs: _requireInt(json, 'capturedStartMs'),
+        capturedEndMs: _requireInt(json, 'capturedEndMs'),
+        gapReason: _requireString(json, 'gapReason'),
+        chunkIds: _requireStringList(json, 'chunkIds'),
+        modelId: _requireString(json, 'modelId'),
+        modelVersion: _requireString(json, 'modelVersion'),
+        lagMs: _requireInt(json, 'lagMs'),
+      );
+
+  static const String displayText = '...';
+  final String segmentId;
+  final int finalizedAtUtcMs;
+  final int captureStartedMonoNs;
+  final int captureEndedMonoNs;
+  final int capturedStartMs;
+  final int capturedEndMs;
+  final String gapReason;
+  final List<String> chunkIds;
+  final String modelId;
+  final String modelVersion;
+  final int lagMs;
+
+  @override
+  Map<String, Object?> toJson() => <String, Object?>{
+        ...baseJson(),
+        'segmentId': segmentId,
+        'finalizedAtUtcMs': finalizedAtUtcMs,
+        'captureStartedMonoNs': captureStartedMonoNs,
+        'captureEndedMonoNs': captureEndedMonoNs,
+        'capturedStartMs': capturedStartMs,
+        'capturedEndMs': capturedEndMs,
+        'gapReason': gapReason,
+        'chunkIds': chunkIds,
+        'modelId': modelId,
+        'modelVersion': modelVersion,
+        'lagMs': lagMs,
       };
 }
 

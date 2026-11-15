@@ -22,7 +22,7 @@ class TranscriptReader extends StatefulWidget {
     required this.controller,
   });
 
-  final contract.EchoAppController controller;
+  final contract.TranscriptReaderController controller;
 
   @override
   State<TranscriptReader> createState() => _TranscriptReaderState();
@@ -38,7 +38,7 @@ class _TranscriptReaderState extends State<TranscriptReader> {
   String _lastSessionId = '';
   bool _userScrolling = false;
 
-  contract.EchoAppController get _controller => widget.controller;
+  contract.TranscriptReaderController get _controller => widget.controller;
 
   @override
   void initState() {
@@ -272,10 +272,22 @@ class _TranscriptReaderState extends State<TranscriptReader> {
                   itemBuilder: (BuildContext context, int index) {
                     if (index < state.segments.length) {
                       final contract.SegmentView segment = state.segments[index];
-                      return SegmentView(
+                      final controller = _controller;
+                      if (controller is contract.EchoAppController) {
+                        return SegmentView(
+                          key: _keyFor(segment.segment.id),
+                          segment: segment,
+                          controller: controller,
+                        );
+                      }
+                      return Padding(
                         key: _keyFor(segment.segment.id),
-                        segment: segment,
-                        controller: _controller,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Text(
+                          segment.segment.kind == SegmentKind.gap ? '...' : segment.visibleText,
+                          textAlign: segment.segment.kind == SegmentKind.gap
+                              ? TextAlign.center : TextAlign.start,
+                        ),
                       );
                     }
                     return _PartialRow(

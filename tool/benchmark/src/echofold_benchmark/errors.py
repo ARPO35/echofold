@@ -9,6 +9,10 @@ class BenchmarkError(Exception):
     exit_code = 2
 
 
+class ValidationError(BenchmarkError):
+    """评测输入校验失败。"""
+
+
 class ManifestError(BenchmarkError):
     """manifest 创建或校验失败。"""
 

@@ -199,6 +199,7 @@ class DefaultRecordingPipeline(
             running = false
             captureThread?.join()
             consumers.forEach { it.join() }
+            (lanes.asr as? com.echofold.capture.pcm.SessionAsrSink)?.close()
             source?.close()
             source = null
         }

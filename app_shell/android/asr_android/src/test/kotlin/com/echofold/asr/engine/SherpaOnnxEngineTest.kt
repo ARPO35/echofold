@@ -106,6 +106,21 @@ class SherpaOnnxEngineTest {
     }
 
     @Test
+    fun `指定IB Robot bundle四工件目录可以加载`() {
+        val directory = File(root, "bundle").apply { mkdirs() }
+        val paths = listOf("encoder/encoder.int8.onnx", "decoder/decoder.onnx",
+            "joiner/joiner.int8.onnx", "tokens/tokens.txt")
+        for (path in paths) {
+            File(directory, "artifacts/$path").apply { parentFile.mkdirs(); writeText("fixture") }
+        }
+        val resolved = SherpaModelLayout.resolve(directory)
+        assertEquals(File(directory, "artifacts/encoder/encoder.int8.onnx"), resolved.encoder)
+        assertEquals(File(directory, "artifacts/decoder/decoder.onnx"), resolved.decoder)
+        assertEquals(File(directory, "artifacts/joiner/joiner.int8.onnx"), resolved.joiner)
+        assertEquals(File(directory, "artifacts/tokens/tokens.txt"), resolved.tokens)
+    }
+
+    @Test
     fun `未初始化时拒绝 PCM 与冲刷`() {
         val engine = engineFor(modelDirectory(), runtime)
         assertThrows<AsrEngineException> { engine.acceptPcm(frame(shortArrayOf(1))) }

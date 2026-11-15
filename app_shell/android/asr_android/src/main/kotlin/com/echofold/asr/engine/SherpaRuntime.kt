@@ -53,11 +53,18 @@ object SherpaModelLayout {
     /** 按约定解析模型目录。 */
     fun resolve(directory: File): SherpaModelPaths {
         if (!directory.isDirectory) throw AsrEngineException("模型安装目录不存在：$directory")
-        val files =
-            directory.listFiles()
-                ?.filter { it.isFile }
-                ?.sortedBy { it.name }
-                .orEmpty()
+        // 上游手动导入为平铺布局，指定 IB-Robot bundle 使用固定四工件目录。
+        val artifactDirectory = File(directory, "artifacts")
+        val files = if (artifactDirectory.isDirectory) {
+            listOf(
+                File(artifactDirectory, "encoder/encoder.int8.onnx"),
+                File(artifactDirectory, "decoder/decoder.onnx"),
+                File(artifactDirectory, "joiner/joiner.int8.onnx"),
+                File(artifactDirectory, "tokens/tokens.txt"),
+            ).filter { it.isFile }
+        } else {
+            directory.listFiles()?.filter { it.isFile }?.sortedBy { it.name }.orEmpty()
+        }
         if (files.isEmpty()) throw AsrEngineException("模型安装目录为空：$directory")
         val encoder = pick(files, ENCODER_PREFIX, directory)
         val decoder = pick(files, DECODER_PREFIX, directory)

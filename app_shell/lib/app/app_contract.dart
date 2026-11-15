@@ -140,6 +140,7 @@ final class TranscriptUiState {
     this.livePartialStartMs,
     this.livePartialEndMs,
     this.asrLagMs = 0,
+    this.failure,
   });
 
   const TranscriptUiState.empty()
@@ -156,6 +157,7 @@ final class TranscriptUiState {
   final int? livePartialStartMs;
   final int? livePartialEndMs;
   final int asrLagMs;
+  final AppFailure? failure;
 
   bool get isFreeReading => mode == ReadingMode.freeReading;
 }
@@ -245,10 +247,18 @@ final class QueueRow {
   final int oldestAgeMs;
 }
 
+/// Narrow read-only surface consumed by the live transcript reader.
+abstract class TranscriptReaderController extends ChangeNotifier {
+  TranscriptUiState get transcript;
+
+  Future<void> setFreeReading(bool free);
+}
+
 /// 应用动作与状态。实现必须是 [ChangeNotifier]：界面用 [ListenableBuilder] 重建。
-abstract class EchoAppController extends ChangeNotifier {
+abstract class EchoAppController extends TranscriptReaderController {
   RecordingUiState get recording;
 
+  @override
   TranscriptUiState get transcript;
 
   List<SessionCardView> get sessions;
@@ -293,6 +303,7 @@ abstract class EchoAppController extends ChangeNotifier {
 
   Future<void> copySegment(String segmentId);
 
+  @override
   Future<void> setFreeReading(bool free);
 
   Future<void> setFoldDelay(Duration delay);

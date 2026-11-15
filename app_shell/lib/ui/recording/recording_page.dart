@@ -8,13 +8,17 @@ import '../../app/app_contract.dart';
 import '../../domain/models.dart';
 import '../motion/echo_motion.dart';
 import '../motion/echo_press.dart';
+import '../../native/asr_event_bridge.dart';
+import '../reading/transcript_reader.dart';
+import 'transcript_controller.dart';
 import 'recording_action_shape.dart';
 import 'amplitude_strip.dart';
 import 'recording_controller.dart';
 
 class RecordingPage extends StatefulWidget {
-  const RecordingPage({super.key, required this.controller});
+  const RecordingPage({super.key, required this.controller, this.asrBridge});
   final RecordingController controller;
+  final AsrEventBridge? asrBridge;
 
   @override
   State<RecordingPage> createState() => _RecordingPageState();
@@ -31,6 +35,9 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
   bool _dragEnabled = false;
   int _destination = 1;
   final Set<int> _visiblePages = <int>{1};
+  late final TranscriptController _transcript = TranscriptController(
+    bridge: widget.asrBridge ?? AsrEventBridge(),
+  );
   bool _active = true;
 
   @override
@@ -38,6 +45,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     widget.controller.addListener(_changed);
+    _transcript.setSession(widget.controller.state.sessionId);
     widget.controller.connect();
   }
 
@@ -48,6 +56,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
       oldWidget.controller.removeListener(_changed);
       widget.controller.addListener(_changed);
       widget.controller.connect();
+      _transcript.setSession(widget.controller.state.sessionId);
     }
   }
 
@@ -66,6 +75,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
   }
 
   void _changed() {
+    _transcript.setSession(widget.controller.state.sessionId);
     if (mounted) setState(() {});
   }
 
@@ -90,6 +100,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_changed);
+    _transcript.dispose();
     _slide.dispose();
     super.dispose();
   }
@@ -293,14 +304,46 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
         const SizedBox(height: 12),
         Text('这里仅显示原生录音服务返回的当前会话，暂不提供历史录音列表或播放。', style: text.bodyLarge),
       ]),
-      _readingPage(key: const PageStorageKey<String>('recording-transcript-scroll'), children: <Widget>[
+      ListenableBuilder(
+        listenable: _transcript,
+        builder: (context, child) {
+          final transcript = _transcript.transcript;
+          if (transcript.segments.isNotEmpty || transcript.livePartialText != null) {
+            return TranscriptReader(controller: _transcript);
+          }
+          return child!;
+        },
+        child: _readingPage(key: const PageStorageKey<String>('recording-transcript-scroll'), children: <Widget>[
         Text('只录下此刻，\n安心留在设备。', style: text.headlineLarge?.copyWith(height: 1.5)),
         const SizedBox(height: 28),
-        Text('本地转写模型尚未接入', style: text.titleLarge),
+        Text('本地转写模型不可用', style: text.titleLarge),
         const SizedBox(height: 12),
-        Text('当前为仅录音模式。这里尚无转写内容，开始录音后只采集并保存音频。',
+        Text('当前尚未接入本地转写模型。你可以选择仅录音；已有数据不会因此删除，但历史浏览入口尚未接入。',
             style: text.bodyLarge?.copyWith(height: 1.8, color: colors.onSurfaceVariant)),
-        const SizedBox(height: 32),
+        const SizedBox(height: 16),
+        Wrap(spacing: 8, runSpacing: 8, children: <Widget>[
+          FilledButton.icon(
+            key: const Key('model-only-recording'),
+            onPressed: controller.canStart ? _start : null,
+            icon: const Icon(Icons.mic),
+            label: const Text('仅录音'),
+          ),
+          OutlinedButton.icon(
+            key: const Key('model-reinstall-unavailable'),
+            onPressed: null,
+            icon: const Icon(Icons.download_outlined),
+            label: const Text('重新安装（暂不可用）'),
+          ),
+          OutlinedButton.icon(
+            key: const Key('model-rollback-unavailable'),
+            onPressed: null,
+            icon: const Icon(Icons.undo),
+            label: const Text('回滚（暂不可用）'),
+          ),
+        ]),
+        const SizedBox(height: 24),
+        const Text('转写内容尚不可用；录音与 GAP 等已有证据不会因模型不可用而删除。'),
+        const SizedBox(height: 24),
         EchoPress(child: OutlinedButton.icon(
           key: const Key('recording-stop-button'),
           onPressed: canStop ? controller.stop : null,
@@ -308,7 +351,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
           label: Text(controller.recoveryRequired ? '录音待恢复' : failedToSave ? '重试保存' : '结束并保存'),
         )),
         _errorPanel(state),
-      ]),
+      ])),
       _readingPage(key: const PageStorageKey<String>('recording-settings-scroll'), children: <Widget>[
         Text('设置', style: text.headlineLarge),
         const SizedBox(height: 28),

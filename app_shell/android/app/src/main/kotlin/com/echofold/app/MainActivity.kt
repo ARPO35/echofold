@@ -5,6 +5,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.os.Handler
+import android.os.Looper
+import com.echofold.core.asr.AsrEvents
+import com.echofold.core.asr.AsrEventJson
 import com.echofold.capture.command.RecordingCommandType
 import com.echofold.capture.service.RecordingBridge
 import com.echofold.capture.service.RecordingForegroundService
@@ -20,6 +24,21 @@ class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
     private var sessionListener: ((Map<String, Any?>) -> Unit)? = null
     private var amplitudeListener: ((List<Map<String, Any?>>) -> Unit)? = null
+    private val asrHandler = Handler(Looper.getMainLooper())
+    private var asrSink: EventChannel.EventSink? = null
+    private val asrDelivery = object : Runnable {
+        override fun run() {
+            val sink = asrSink ?: return
+            try {
+                AsrEvents.buffer.deliver { sink.success(AsrEventJson.toChannelMap(it)) }
+            } catch (error: Exception) {
+                asrSink = null
+                sink.error("ASR_DELIVERY_FAILED", "转写事件投递失败", null)
+                return
+            }
+            asrHandler.postDelayed(this, 50)
+        }
+    }
 
     override fun onResume() { super.onResume(); visible = true; sessionListener?.invoke(RecordingBridge.snapshot) }
     override fun onPause() { visible = false; super.onPause() }
@@ -27,6 +46,17 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
+        EventChannel(messenger, "com.echofold.app/asr_events").setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                asrHandler.removeCallbacks(asrDelivery)
+                asrSink = events
+                asrHandler.post(asrDelivery)
+            }
+            override fun onCancel(arguments: Any?) {
+                asrSink = null
+                asrHandler.removeCallbacks(asrDelivery)
+            }
+        })
         EventChannel(messenger, "com.echofold.app/session_events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
                 sessionListener = { events.success(it) }
@@ -109,6 +139,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        asrSink = null
+        asrHandler.removeCallbacks(asrDelivery)
         if (RecordingBridge.sessionListener === sessionListener) RecordingBridge.sessionListener = null
         if (RecordingBridge.amplitudeListener === amplitudeListener) RecordingBridge.amplitudeListener = null
         permissionResult?.error("ACTIVITY_DESTROYED", "权限页面已重建，请重新请求权限", null)

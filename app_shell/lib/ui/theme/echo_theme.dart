@@ -39,7 +39,7 @@ abstract final class EchoTheme {
       vertical: 14,
     );
 
-    // 只统一布局与形状；交互色、禁用态、焦点和 Ink 交给原生 MD3 组件。
+    // 统一布局、触控目标与形状；交互色、禁用态、焦点和 Ink 交给原生 MD3 组件。
     return base.copyWith(
       textTheme: text,
       appBarTheme: AppBarThemeData(
@@ -54,6 +54,7 @@ abstract final class EchoTheme {
         style: FilledButton.styleFrom(
           shape: capsule,
           padding: buttonPadding,
+          minimumSize: const Size(48, 48),
           textStyle: text.labelLarge,
         ),
       ),
@@ -61,6 +62,7 @@ abstract final class EchoTheme {
         style: ElevatedButton.styleFrom(
           shape: capsule,
           padding: buttonPadding,
+          minimumSize: const Size(48, 48),
           textStyle: text.labelLarge,
         ),
       ),
@@ -68,6 +70,7 @@ abstract final class EchoTheme {
         style: OutlinedButton.styleFrom(
           shape: capsule,
           padding: buttonPadding,
+          minimumSize: const Size(48, 48),
           textStyle: text.labelLarge,
         ),
       ),
@@ -75,11 +78,15 @@ abstract final class EchoTheme {
         style: TextButton.styleFrom(
           shape: capsule,
           padding: buttonPadding,
+          minimumSize: const Size(48, 48),
           textStyle: text.labelLarge,
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
-        style: IconButton.styleFrom(shape: const CircleBorder()),
+        style: IconButton.styleFrom(
+          shape: const CircleBorder(),
+          minimumSize: const Size(48, 48),
+        ),
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: scheme.surfaceContainerHigh,

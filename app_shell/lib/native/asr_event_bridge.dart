@@ -46,6 +46,17 @@ final class AsrEventBridge {
   StreamSubscription<Object?>? _subscription;
   int _generation = 0;
   Set<String> _seenEventIds = <String>{};
+  String? _sessionId;
+  bool _sessionSelected = false;
+
+  /// Select the recording session before accepting its first event.
+  void setSession(String? sessionId) {
+    _sessionSelected = true;
+    if (_sessionId == sessionId) return;
+    _sessionId = sessionId;
+    _generation = 0;
+    _seenEventIds = <String>{};
+  }
   bool _disposed = false;
 
   /// 已解析且通过门控的事件流；重复 `eventId` 与旧世代事件被静默丢弃。
@@ -86,6 +97,12 @@ final class AsrEventBridge {
     } on FormatException {
       _malformedEvents.add(payload);
       return;
+    }
+    if (_sessionSelected && event.sessionId != _sessionId) return;
+    if (!_sessionSelected && event.sessionId != _sessionId) {
+      _sessionId = event.sessionId;
+      _generation = 0;
+      _seenEventIds = <String>{};
     }
     final result = AsrEventGate.evaluate(
       event: event,
