@@ -4,13 +4,13 @@
 
 - [ ] 1.1 建立 Flutter + Kotlin 多模块工程、静态检查、单元测试和真机调试基线；确认 minSdk/targetSdk 与依赖许可。
 - [ ] 1.2 固定一台中端和一台较低配置 ARM64 Android 参考设备，记录设备/SoC/RAM/OS/补丁、厂商电池策略、存储、供电与环境条件；建立逐设备报告模板，禁止互相替代结果。
-- [ ] 1.3 在任何模型质量或速度决策前固定 X-ASR 候选的实际工件清单：精确文件名、上游来源、revision、SHA-256、字节数、运行时/ABI 和能力标记；核实是否确为 INT8。若需量化转换，同时固定源工件、量化工具与版本、完整命令、校准/配置输入和每个输出工件的 SHA-256；将作者发布物、转换产物和本项目实测分开标识，未证实的约 134MB/169MB 不得进入任何预算。
+- [ ] 1.3 模型已定为 `openEuler/sherpa-onnx-asr`（Hugging Face，schema-v3 IB-Robot bundle，上游 sherpa-onnx `sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-int8-2026-06-05`，Apache-2.0）。固定 Android CPU 路线四工件：`artifacts/encoder/encoder.int8.onnx`(155,278,641B)、`artifacts/decoder/decoder.onnx`(11,309,084B)、`artifacts/joiner/joiner.int8.onnx`(2,581,422B)、`artifacts/tokens/tokens.txt`(59,240B)，记录 revision `sherpa-onnx-asr@bundle-v1`、各文件 SHA-256 与来源链接；作者发布物与本项目实测分开标识。同仓库 `encoder_ascend/*.om`(460,705,033B) 为 Ascend NPU 专用，Android 不使用。
 - [ ] 1.4 在任务 1.5 和任何模型 go/no-go 之前冻结完整评测协议：固定中文清晰、中英混合、噪声、口音、静音/停顿及长会话数据的可复现 manifest、来源/许可、样本与参考转写哈希，固定 CER/WER 评分器版本、文本规范化、计时方法和执行命令并分开试点集与最终验收集；建立仅用于评测的最小基准驱动器并运行冻结试点形成分布报告，预注册逐设备/类别最低可接受准确率所对应的 CER/WER 上限，同时冻结队列容量、资源、长测和指定崩溃尾部损失预算。速度基线固定为每台设备持续 `RTF < 1`（实时必要非充分条件）及正常目标 p95 ASR 落后 ≤15 秒，不得为速度放宽准确率门槛。
 - [ ] 1.5 验证任务 1.3 固定的实际工件在 sherpa-onnx Android 运行时的加载、流式事件、时间戳和中英混合能力；记录转换产物（若有）与作者发布物的区别，不将加载成功视为质量或性能通过。
 - [ ] 1.6 验证麦克风类型前台服务从可见界面启动、后台继续、通知展示和进程恢复；记录 Android 版本差异，覆盖权限拒绝/撤销和麦克风占用。
 - [ ] 1.7 验证 AudioRecord 单路 PCM 向 ASR、AAC 编码、振幅采样和持久化路径分发，测量拷贝、队列与线程开销；原型验证新块分发阻断、原子占位、编码器初始化失败和正常封存空间预留。
 - [ ] 1.8 验证 MediaCodec/MediaMuxer 的 AAC-LC/M4A 实际 192kbps 支持及异常尾部恢复；在相同条件下比较 30/60/300 秒分块的尾部损失、文件数、封装开销、切换停顿和恢复时间，并验证 Media3 Transformer 合并的可解码性、时长、边界和是否重编码。
-- [ ] 1.9 在两台参考设备分别执行 30 分钟可行性尖刺，记录 RTF、Partial/FINAL 落后、CER/WER、内存、温度、功耗、队列和失败样例；按任务 1.4 的预注册门槛作模型继续/调整/no-go 决策，明确该尖刺不替代两小时发布长测。
+- [ ] 1.9 在参考设备（当前 NX712J 一台；第二台低配设备 1.2 仍待固定）执行 30 分钟可行性尖刺，记录 RTF、Partial/FINAL 落后、CER/WER、内存、温度、功耗、队列和失败样例；按任务 1.4 的预注册门槛作模型继续/调整/no-go 决策，明确该尖刺不替代两小时发布长测。作者已发布 torch_cpu 参考：clean CER 6.8%、noisy 8.4%、RTF 0.408（43 句×8 人×清洁/10dB 噪声=684 句，`recognize_file`），项目实测必须独立复测，不得引用该数值充当本项目结果。
 - [ ] 1.10 建立 drift schema、迁移测试与文件/数据库可恢复提交协议；定义全部实体、稳定 ID、UTC 创建/封存时间、会话单调采集时钟和实际内容 offset 的映射，验证暂停、继续和跨块引用。
 - [ ] 1.11 评审工件溯源、预注册门槛和尖刺结果；若 X-ASR、AAC、Media3 或采集关键假设不成立，先更新 design/spec 与相应任务，再进入完整实现，不静默换远端 ASR 或第二识别模型。
 
@@ -41,6 +41,18 @@
 - [x] 3.10 编写普通段/GAP 重识别的成功、失败、取消、离线、跨块、模型更新和重复请求测试，验证同模型/同会话版本、父版本保留、默认展示切换和任务幂等。
 - [ ] 3.11 按冻结 manifest、评分器和预注册门槛建立可复现 ASR 基准报告；分栏列出作者基准、官方/第三方证据与本项目实测，报告逐设备 CER/WER、RTF、p50/p95/最大落后、GAP 和失败样例，不以不同硬件数值混排排名。
 
+## 3A. 实时转写上屏垂直切片（优先里程碑：录音 → 识别 → 屏幕显示）
+
+本组是用户指定的当前优先目标，先于 §4 完整界面推进。范围只含"录音时屏幕出现真实识别文字"的最小闭环；不做折叠/L2/L3、BYOK、播放、导出。完成后 §5.1 的 GAP 展示子项即视为可部分验收，其余 §5 条目不受影响。
+
+- [ ] 3A.1 落地模型工件：按任务 1.3 下载 openEuler/sherpa-onnx-asr 的 encoder/decoder/joiner/tokens 四工件，经 §2.6 安装器（或记录的手动导入）安装到设备，校验 SHA-256；在应用内以 §2.7 租约固定该版本。
+- [ ] 3A.2 接线 `PcmDispatcher` → `SherpaOnnxEngine`：录音管线注册 `AsrSink` 消费者，真实 16kHz PCM 驱动识别；验证 `ReflectiveSherpaRuntime` 在真机加载 four-artifact 布局（`SherpaModelLayout` 已匹配），失败必须显式报错不静默降级。
+- [ ] 3A.3 原生新增 `com.echofold.app/asr_events` EventChannel：把 `AsrEventJson.toMap()` 的 Partial/FinalCandidate/Final/Health/GAP 事件投递到 Flutter，与 `AsrEventBridge`（去重、世代门控）对接。
+- [ ] 3A.4 实现 `TranscriptController`：消费 `AsrEventBridge` 事件流，维护 `TranscriptUiState`（活跃 Partial 行、FINAL 不可变段、GAP 居中 `...`、asrLagMs），与 `TranscriptSegment`/版本存储打通；换会话清空、进程重建按既有事件 ID 恢复。
+- [ ] 3A.5 录制页中栏替换"本地转写模型尚未接入"占位为 `TranscriptReader`，跟随底部模式最小实现（回到最新按钮可后置到 §5.4）；无模型/初始化失败时显示 §2.8 的显式选择而不是假文字。
+- [ ] 3A.6 真机验证（缩小版尖刺，作为 1.5/1.9 的首批证据）：录音 60 秒以上，屏幕出现 Partial/Final 文字；记录首字延迟、Partial 更新频率、识别落后、内存；中英混合各试一句；结果写入证据记录，不宣称通过 1.4 预注册门槛。
+- [ ] 3A.7 测试：FakeSherpaRuntime 驱动的管线→事件桥→控制器单元测试（重复/乱序/世代过期、GAP 插入、会话切换清空）；widget 测试覆盖 Partial 行、FINAL 段、GAP 居中与失败态展示。
+
 ## 4. Flutter 三页界面与录音手势
 
 - [ ] 4.1 使用底部导航和 `IndexedStack` 或等效机制实现录音列表、录音、设置三页并保留状态；页面切换不暂停录音、ASR、下载或处理队列。
@@ -54,7 +66,7 @@
 
 ## 5. 实时阅读、ReaderContext、滚动与动效
 
-- [ ] 5.1 实现 Partial/FINAL/GAP 阅读流、未整理状态和长列表局部更新；GAP 的 `...` 必须单独居中一行，不能作为普通 ASR 文字参与改写。
+- [ ] 5.1 实现 Partial/FINAL/GAP 阅读流、未整理状态和长列表局部更新；GAP 的 `...` 必须单独居中一行，不能作为普通 ASR 文字参与改写。（GAP 居中展示与 Partial/FINAL 基础流的最小版由 §3A.4/3A.5/3A.7 先行交付，本条验收仍要求完整未整理状态与长列表局部更新。）
 - [ ] 5.2 实现按会话内存保存的 `ReaderContext`，容纳手动展开锁定、滚动/阅读上下文和三页切换状态；同会话三页切换保持，进入另一会话或进程重启必须清除，不得持久化冒充跨会话状态。
 - [ ] 5.3 实现跟随底部/自由阅读状态机，区分手指按下、用户滚动和程序滚动；程序锚点补偿不得误触发自由阅读。
 - [ ] 5.4 实现回到最新按钮、手动划底恢复跟随和自由阅读时新内容不抢位置。
