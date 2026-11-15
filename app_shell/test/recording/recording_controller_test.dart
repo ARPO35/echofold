@@ -75,9 +75,21 @@ void main() {
     platform.sealFails = false;
     await controller.stop();
     expect(controller.state.state, SessionState.idle);
+    expect(controller.state.sessionId, isNull);
+    expect(controller.state.elapsedMs, 0);
+    expect(platform.snapshot['capturedMs'], 100,
+        reason: '原生最终累计时长属于已保存会话，不改写历史证据');
     expect(controller.state.amplitudes, isEmpty);
     expect(platform.starts, 1, reason: '保存成功也不自动开始下一段');
     expect(controller.canStart, isTrue);
+    await controller.connect();
+    expect(controller.state.elapsedMs, 0, reason: '重连读取同一封存快照仍为空闲');
+    await controller.startOnlyRecording();
+    expect(platform.starts, 2);
+    expect(controller.state.state, SessionState.recording);
+    expect(controller.state.elapsedMs, 0);
+    platform.publish('RECORDING', sessionId: 'session-2', capturedMs: 1260);
+    expect(controller.state.elapsedMs, 1260);
   });
 
   test('需要恢复的录音保留会话，禁止重复封存和新建', () async {

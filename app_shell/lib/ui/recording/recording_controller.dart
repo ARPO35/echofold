@@ -212,14 +212,17 @@ final class RecordingController extends ChangeNotifier {
     if (sequence <= _sequence) return;
     _pcmDispatching = dispatch == 'DISPATCHING';
     final bool newSession = id != _snapshot.sessionId;
+    // 原生结束后会保留旧会话最终 capturedMs；它不属于新的空闲录音面。
+    // 只在权威 IDLE 快照确认会话释放后清空当前态，失败仍保留旧会话。
+    final bool idle = next == SessionState.idle;
     if (newSession) _lastMonoNs = -1;
     final String? code = map['errorCode'] as String?;
     final String? message = map['errorMessage'] as String?;
     _snapshot = RecordingUiState(
       state: next,
       sessionId: id as String?,
-      elapsedMs: captured,
-      amplitudes: newSession ? const <AmplitudePoint>[] : _snapshot.amplitudes,
+      elapsedMs: idle ? 0 : captured,
+      amplitudes: idle || newSession ? const <AmplitudePoint>[] : _snapshot.amplitudes,
       transcriptAvailable: false,
       storageWarning: next == SessionState.lowStoragePaused
           ? '可用空间不足，录音已暂停。请释放空间后结束并保存。'

@@ -61,7 +61,7 @@ cd app_shell && dart run build_runner build
 
 应用的 compileSdk/targetSdk 使用 `flutter.compileSdkVersion` / `flutter.targetSdkVersion`，不是工程内固定常量；换 Flutter SDK 后须重新确认。依赖许可已核对的具体版本、原始证据和未覆盖范围见[校验报告](../docs/validation-report.md)。这次核对没有完成全部传递依赖、原生工件或发布告知审查，也没有核验商店目标 API 政策。
 
-接手时 `adb devices` 无已连接设备，未建立安装、调试、麦克风权限、前台服务或实际编码/ASR 链路的真机基线；两台参考设备、模型工件、预注册评测和 30 分钟可行性尖刺均未通过。§1.1 与 TASK-01 保持未完成，继续工作范围见 [TASK-01](../.spec/tasks/TASK-01-foundation-spike.md)。
+接手时 `adb devices` 无已连接设备属于历史状态；2026-11-15 已连接 NX712J（ADB `D123060104D2`、Android 14）并通过 `adb install -r` 安装本轮 APK，完成部分真实录音、麦克风前台服务、暂停/继续和编码解码验证，详情见[校验报告](../docs/validation-report.md)。两台参考设备、模型工件、预注册评测和 30 分钟可行性尖刺仍未通过。§1.1 与 TASK-01 保持未完成，继续工作范围见 [TASK-01](../.spec/tasks/TASK-01-foundation-spike.md)。
 
 全局 `openspec` 与 `pnpm` 启动脚本在接手环境中失效且未修复；本次未重跑 OpenSpec 结构校验，历史通过记录不代表当前工作树通过。已执行的统一门禁命令、实际结果与未测项见[校验报告](../docs/validation-report.md)。
 
@@ -89,6 +89,10 @@ cd app_shell && dart run build_runner build
 
 所有应用内操作及形状、颜色、内容、布局变化遵循统一连续、可打断反馈。`EchoMotion` 提供统一参数与系统减少动态效果例外，`EchoPress` 在内建反馈不足时提供被动按压状态层、缩放或形状反馈，不注册抢占业务手势的识别器；未触发、滑出与取消也应连续回弹。录音仍以原生确认更新状态，实际位移决定左滑结束，封存失败保留证据。现有 `lib/ui/reading/` 组件纳入这套全项目规范的将来实施验收，尚未接入页面不因此被声明已完成。
 
-本变更实际验证见 [Evidence](../openspec/changes/establish-md3-recording-surface/tasks.md#evidence)：主 agent 首轮 `flutter analyze --no-pub` 退出码 0、`No issues found`；随后仅修订 reduced AnimatedSize 分支与 deactivate 拖动取消，未宣称最终代码再次分析通过。`flutter test --no-pub test/recording` 经首轮 35 项通过、5 项失败及对应修复后，最终退出码 0、40 项 `All tests passed`。临时 Web 壳使用真实 lib 与原 package_config，最终 debug Web 构建退出码 0；Edge 412×915、320×800 实际三页导航和布局正常，浏览器 errors 为空，截图仅存 /tmp、未入库。Web 无原生通道时正确显示连接错误并禁用录音，不能证明 Android 采集。
+本变更实际验证见 [Evidence](../openspec/changes/establish-md3-recording-surface/tasks.md#evidence)：首轮录音测试 35 项通过、5 项失败，修复 reduced AnimatedSize 与 deactivate 拖动取消后曾通过 40 项；最终修复后 `flutter test --no-pub test/recording` 输出 `+41 All tests passed`，`flutter analyze --no-pub` 输出 `No issues found`，均退出 0。临时 Web 壳使用真实 lib 与原 package_config，debug Web 构建退出码 0；Edge 412×915、320×800 实际三页导航和布局正常，浏览器 errors 为空，截图仅存 /tmp、未入库。Web 无原生通道时正确显示连接错误并禁用录音，不能证明 Android 采集。
 
-Android 离线 `:app:assembleDebug` 退出码 1，缺 Kotlin 1.8.22、ASM 9.6 等依赖缓存，未下载或安装依赖，无本次成功 APK；原始输出为 `artifact://25`。Flutter devices 只列出 Linux，当前无 Android 连接；OpenSpec CLI shim 引用入口不存在，未重复运行已知失败脚本。本次 Android 录音、TalkBack、完整可访问性和严格结构校验仍待验收，TASK-10 为 in-progress，定向测试与浏览器结果不代表完整项目门禁通过。
+上轮 Android 离线 `:app:assembleDebug` 退出码 1，缺 Kotlin 1.8.22、ASM 9.6 等依赖缓存，原始输出 `artifact://25`；当时 Flutter devices 只列 Linux，均保留为历史。本轮原 Maven Central 地址 403 后，使用显式 `-I /tmp/echofold-task10-central-mirror.init.gradle` 映射 Google 官方 `https://maven-central.storage-download.googleapis.com/maven2`，初版 assembleDebug 18s 成功；最终修复重建输出 `BUILD SUCCESSFUL in 7s`、215 tasks（24 executed），未改依赖、项目配置或全局配置。初版日志 `/tmp/echofold-task10-assembleDebug.log`；最终 APK `build/app/outputs/apk/debug/app-debug.apk`，SHA-256 `19edc09dce6bd9e575903361bafed283be95e10842adde5a7e449c1338b8d5af`，两次 `adb install -r` 均返回 `Success`。
+
+本轮真机已观察取消确认不建会话、空闲达标左滑不改变 sessions、录制中三页往返保持同一会话、短拖不结束、暂停冻结/继续及慢长拖结束退出前台服务。受控会话两块 SEALED 合计 30.280s，ffprobe 为 AAC mono 48kHz，ffmpeg 两块完整解码均退出 0。保存后空闲时长残留已修复：权威 IDLE 归零当前显示并清波形，原生历史 snapshot 不改，失败仍保留旧时长；最终重启与新录音保存均复验空闲 00:00:00。主按钮重复语义已修复，最终语义树只有一个有“开始仅录音”标签、可点击且 enabled 的 Button，重复 NAF 内按钮消失。完整证据见上述 Evidence；设备截图和索引仅在 `/tmp/echofold-md3-device`，未入库，旧用户音频保留，未改手机系统设置。
+
+uiautomator 语义探测触发 accessibleNavigation 后，EchoMotion 按该信号显示减少动态效果；系统 font_scale、animator 仍为 1，不能据此认定系统 reduce 验收或标准动画流畅。TalkBack 未启动，大字与系统减少动态效果尚未实机验证。OpenSpec CLI shim 引用入口不存在，strict 未执行，未安装全局工具。TASK-10 为 in-progress，局部设备与浏览器结果不代表完整项目门禁通过。

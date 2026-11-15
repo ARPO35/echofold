@@ -367,7 +367,10 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
                         onHorizontalDragCancel: () { _dragEnabled = false; _animateBack(0); },
                         onHorizontalDragEnd: (DragEndDetails details) => _dragEnd(details, canStop),
                         child: Semantics(
-                          button: true, enabled: canMain, label: actionLabel,
+                          key: const Key('recording-main-semantics'),
+                          excludeSemantics: true,
+                          onTap: canMain ? _mainAction : null,
+                          button: true, enabled: canMain, focusable: true, label: actionLabel,
                           child: EchoPress(borderRadius: BorderRadius.circular(32),
                             child: TweenAnimationBuilder<double>(
                               tween: Tween<double>(end: phase == 1 ? 22 : 32),

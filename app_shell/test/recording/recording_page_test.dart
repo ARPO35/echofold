@@ -138,17 +138,70 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     expect(platform.commands, <String>['PAUSE', 'RESUME']);
   });
+  testWidgets('主控制只有一个带标签的按钮语义，支持真实辅助操作并反映禁用状态', (WidgetTester tester) async {
+    final SemanticsHandle handle = tester.ensureSemantics();
+    await _mount(tester, controller);
+    final Finder action = find.byKey(const Key('recording-main-semantics'));
+    SemanticsNode node = tester.getSemantics(action);
+    expect(node, matchesSemantics(
+      label: '开始仅录音', isButton: true, isFocusable: true,
+      hasEnabledState: true, isEnabled: true, hasTapAction: true,
+      hasScrollLeftAction: true, hasScrollRightAction: true,
+    ));
+    expect(node.debugListChildrenInOrder(DebugSemanticsDumpOrder.traversalOrder), isEmpty);
+    node.owner!.performAction(node.id, SemanticsAction.tap);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '开始仅录音'));
+    await tester.pumpAndSettle();
+    node = tester.getSemantics(action);
+    expect(node.label, '暂停录音；向左拖动结束并保存');
+    expect(node.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
+    node.owner!.performAction(node.id, SemanticsAction.tap);
+    await tester.pumpAndSettle();
+    expect(platform.commands, <String>['PAUSE']);
+    expect(tester.getSemantics(action).label, '继续录音；向左拖动结束并保存');
+    platform.publish('FAILED', errorCode: 'RECORDING_RECOVERY_REQUIRED');
+    await tester.pumpAndSettle();
+    node = tester.getSemantics(action);
+    expect(node, matchesSemantics(
+      label: '开始仅录音', isButton: true, isFocusable: true,
+      hasEnabledState: true, isEnabled: false, hasTapAction: false,
+      hasScrollLeftAction: true, hasScrollRightAction: true,
+    ));
+    expect(node.debugListChildrenInOrder(DebugSemanticsDumpOrder.traversalOrder), isEmpty);
+    handle.dispose();
+  });
+
 
   testWidgets('短距离快速左滑不结束，慢速超过阈值才保存', (WidgetTester tester) async {
     await _mount(tester, controller);
     await _start(tester);
+    platform.publish('RECORDING', capturedMs: 29020);
+    platform.amplitude(1, 29020);
+    await tester.pump();
+    await tester.tap(find.byKey(_main));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(_main));
+    await tester.pumpAndSettle();
+    platform.publish('RECORDING', capturedMs: 30280);
+    await tester.pump();
+    expect(find.text('00:00:30'), findsOneWidget);
     await _swipe(tester, 48, const Duration(milliseconds: 80));
-    expect(platform.commands, isEmpty);
+    expect(platform.commands, <String>['PAUSE', 'RESUME']);
     expect(controller.state.state, SessionState.recording);
     await _swipe(tester, 140, const Duration(seconds: 2));
-    expect(platform.commands, <String>['STOP']);
+    expect(platform.commands, <String>['PAUSE', 'RESUME', 'STOP']);
     expect(find.text('准备录音'), findsOneWidget);
     expect(platform.starts, 1);
+    expect(find.text('00:00:00'), findsOneWidget);
+    expect(tester.widget<AmplitudeStrip>(find.byType(AmplitudeStrip)).amplitudes, isEmpty);
+    expect(tester.widget<OutlinedButton>(find.byKey(const Key('recording-stop-button'))).onPressed, isNull);
+    await _start(tester);
+    expect(find.text('00:00:00'), findsOneWidget);
+    platform.publish('RECORDING', sessionId: 'session-2', capturedMs: 1260);
+    await tester.pump();
+    expect(find.text('00:00:01'), findsOneWidget);
   });
 
   testWidgets('空闲左滑无效，减少动画时手势仍可保存', (WidgetTester tester) async {
@@ -303,16 +356,20 @@ void main() {
     platform.sealFails = true;
     await _mount(tester, controller);
     await _start(tester);
+    platform.publish('RECORDING', capturedMs: 30280);
+    await tester.pump();
     await _swipe(tester, 140, const Duration(seconds: 1));
     expect(find.text('录音未能保存'), findsOneWidget);
     expect(find.textContaining('保存失败，当前录音仍保留'), findsOneWidget);
     expect(controller.state.sessionId, 'session-1');
+    expect(find.text('00:00:30'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(_main)).onPressed, isNull);
     platform.sealFails = false;
     await tester.ensureVisible(find.byKey(const Key('recording-stop-button')));
     await tester.tap(find.byKey(const Key('recording-stop-button')));
     await tester.pumpAndSettle();
     expect(find.text('准备录音'), findsOneWidget);
+    expect(find.text('00:00:00'), findsOneWidget);
     expect(platform.starts, 1);
   });
 

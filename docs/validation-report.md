@@ -216,3 +216,33 @@ No issues found!
 实际验证：Flutter analyzer 输出 `No issues found!`；曲线几何 8 项通过，动画与录音页面 17 项通过，包含 100Hz/120Hz 帧间隔像素向左变化、批次间不回跳、暂停冻结、恢复不计暂停墙钟、后台/TickerMode、减少动态效果及断流停止。首轮像素测试因图像读取留在 fake async 中等待而中断，改为 `tester.runAsync` 后上述 17 项全部通过。未执行无关 Core/Android 单元测试或全仓门禁。
 
 profile 构建首次离线失败于未缓存的 profile embedding/AndroidX 依赖，随后使用既有单次 Maven 镜像联网构建通过（25s），定点修复 analyzer 提示后最终离线 `:app:assembleProfile -Ptarget-platform=android-arm64` 通过（19s）。用户报告 USB 安装已恢复可用，实际 `adb install -r app-profile.apk` 返回 `Success`，冷启动返回 `Status: ok`、`TotalTime: 767`。已在设备录音页面实际查看，用户反馈“我看了，效果可以”。设备支持 60/120Hz，但本轮没有取得稳定 120fps 的 profile 帧耗时/提交间隔测量；vsync 驱动与像素测试不等于真机跑满 120Hz，不能宣称该性能指标已通过。没有修改全局配置、手机安全策略或安装新软件；TASK-01/TASK-04 整体状态保持未验收。
+
+## 2026-11-15 Material 3 录制界面 Android 本轮证据（含最终修复复验）
+
+本节依据主 agent 实际观察编写，文档 agent 未重复执行构建、测试或 adb。此前“无 Android 连接”、离线构建失败与旧版本问题均为各自当轮历史，不代表当前设备状态。本轮开始时 git 基线干净；设备 NX712J，ADB `D123060104D2`，Android 14，1116×2480 物理像素、density 480、font_scale 1、animator 1。没有修改手机系统设置，旧用户音频保留未清除。
+
+### 构建与安装
+
+原 Maven Central 地址返回 403；本轮通过显式 `-I /tmp/echofold-task10-central-mirror.init.gradle` 将 Maven Central 映射为 Google 官方 `https://maven-central.storage-download.googleapis.com/maven2`，初版 `:app:assembleDebug` 输出 `BUILD SUCCESSFUL in 18s`，215 tasks（24 executed）。临时脚本仅作用于对应调用，未改依赖、项目配置或全局配置。初版日志 `/tmp/echofold-task10-assembleDebug.log` 为本机临时文件，初版 SHA-256 `cf28a9acb1342573aa47e8565d3319aa0edc9b71f9f8aaf517f3d38194e93bd3`。最终修复后使用同一镜像 `-I` 执行 `:app:assembleDebug`，输出 `BUILD SUCCESSFUL in 7s`、215 tasks（24 executed）。最终 APK 路径仍为 `app_shell/build/app/outputs/apk/debug/app-debug.apk`，SHA-256 `19edc09dce6bd9e575903361bafed283be95e10842adde5a7e449c1338b8d5af`；初版与最终版两次 `adb install -r` 均返回 `Success`。
+
+### 真实采集与交互
+
+- 取消仅录音确认前后的 sessions 索引 `cmp` 完全一致；空闲态达标左滑前后 sessions 也完全一致，均未误建或结束会话。
+- 真实会话 `ee699bba-4219-4387-b47e-0ce34b766e9f` 录音时麦克风前台服务 type `0x80`，真实明亮前景波形两端渐隐。录制中切换列表、设置再返回，仍为同一会话 `RECORDING`。
+- 短拖 123 物理 px（41dp）、90ms 不结束。暂停在 29.020s 冻结，主控制显示三角继续；恢复后慢拖 523 物理 px（174dp）、1200ms 结束，前台服务退出。
+- 两块 `SEALED` 的索引时长 29.020 + 1.260 = 30.280s；`ffprobe` 确认 AAC、单声道、48kHz，文件实际时长 29.013333 + 1.258667s；`ffmpeg` 两块均完整解码，退出码 0。索引的采集时长与封装文件时长分别记录，不将两者写成完全相等。
+- 设置页“管理系统麦克风权限”实际打开 `com.android.settings/.applications.InstalledAppDetails`，由 `dumpsys` 的 `mFocusedApp` 确认，随后 Back 返回；未修改权限或系统设置。
+
+截图和原生索引位于 `/tmp/echofold-md3-device`，仅为本机临时证据，未入库，不能作为永久仓库链接。
+
+### 发现、语义探测与未测项
+
+首轮发现保存后空闲时长残留 30s。controller 已修复为收到权威 IDLE 时归零当前时长并清波形，不修改原生历史 snapshot，失败仍保留旧时长。最终真机重启 app 后旧 snapshot 的空闲时长为 0，再新录音并达标左滑保存，`11-fixed-saved.png` 确认“准备录音 00:00:00”。首轮 `settings-semantics.xml` 中主按钮外层有 label 但不可点击、内层 `NAF=true` 无标签可点击且双 focusable；已通过排除子语义和显式 onTap 修复。最终 `fixed-saved-semantics.xml` 确认只有一个 `android.widget.Button`，content-desc“开始仅录音”，clickable=true、enabled=true，重复 NAF 内按钮消失。其他已探测项：权限入口 48dp，导航 108×80dp，主按钮 64dp，有对应中文标签和 Tab 选中状态；局部目标尺寸与标签证据不等于完整可访问性通过。
+
+uiautomator dump 打开可访问语义后，设置页显示“已遵循系统：减少动态效果”，原因是 EchoMotion 接受 accessibleNavigation。最终只读系统检查为 font_scale 1、animator 1、accessibility_enabled 0、services null、reduce_motion null，未修改手机配置。此语义探测与系统减少动态效果独立记录，不能据录屏宣称标准动画流畅。TalkBack 未启动，大字、系统 reduce 与完整交互/对比度矩阵尚未实机验收。首轮 logcat 文件为空，不据此宣称无异常日志。
+
+OpenSpec 已安装 shim 的实际入口缺失，strict 未执行，未安装全局工具。本轮 APK 成功、真实采集与解码不代替全项目 build/test/lint、严格结构校验或完整 Android 验收。TASK-10 保持 in-progress，旧 TASK-01、TASK-04 与前置尖刺状态不变。
+
+补充文件与索引完整性证据：旧 chunks 记录前后按 id 逐项比较，`jq all` 返回 `true`，旧记录全部相等。新会话两块文件的 `sha256sum` 均与原生索引 checksum 一致：块 0 为 `e1b5c0888abfdd309b850ac7d09be655646b1cb5b98549ad9ab6f90b95f008e6`，块 1 为 `07478c8a70f628e6db33ab1553005d554a7b0dd9f937d3b8383bc8edbca0eea9`。这证明本次所查真实文件与索引匹配、旧块记录未变，不代表完整崩溃恢复验收。
+
+最终本机定向验证由主 agent 执行：`flutter test --no-pub test/recording` 输出 `+41 All tests passed`，`flutter analyze --no-pub` 输出 `No issues found`，均退出 0。该结果对应最终空闲显示与语义修复后的代码，仅证明录音目录定向测试和 Flutter analyzer 通过，不泛化为根 Makefile 全部门禁或整体任务完成。
