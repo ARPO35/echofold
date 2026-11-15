@@ -49,7 +49,7 @@ final class AsrEventBridge {
   String? _sessionId;
   bool _sessionSelected = false;
 
-  /// Select the recording session before accepting its first event.
+  /// 首个事件到达前选择会话，切换时重置旧会话的世代门控。
   void setSession(String? sessionId) {
     _sessionSelected = true;
     if (_sessionId == sessionId) return;

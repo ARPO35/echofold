@@ -143,4 +143,17 @@ void main() {
     controller.dispose();
     await source.close();
   });
+
+  test('健康事件先到时不丢弃迟到最终证据', () async {
+    final source = StreamController<Object?>();
+    final bridge = AsrEventBridge(eventStream: source.stream);
+    final controller = TranscriptController(bridge: bridge)..setSession('s1');
+    source.add(_health('s1', 3, 0));
+    source.add(_final('s1', 2, '迟到但已提交的文字'));
+    source.add(_final('s1', 2, '迟到但已提交的文字'));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.transcript.segments.single.visibleText, '迟到但已提交的文字');
+    controller.dispose();
+    await source.close();
+  });
 }

@@ -66,8 +66,9 @@ final class TranscriptController extends TranscriptReaderController {
       _partialStartMs = null;
       _partialEndMs = null;
     }
-    if (event.seq <= _lastSeq) return;
-    _lastSeq = event.seq;
+    // 原生事件可乱序送达；FINAL/GAP 是不可变证据，不能被后续 Health 的序号门控丢弃。
+    if (event.seq <= _lastSeq && event is! AsrFinal && event is! AsrGap) return;
+    if (event.seq > _lastSeq) _lastSeq = event.seq;
     switch (event) {
       case AsrPartial():
         _partial = event.text.isEmpty ? null : event.text;
