@@ -4,7 +4,7 @@
 
 - [ ] 1.1 建立 Flutter + Kotlin 多模块工程、静态检查、单元测试和真机调试基线；确认 minSdk/targetSdk 与依赖许可。
 - [ ] 1.2 固定一台中端和一台较低配置 ARM64 Android 参考设备，记录设备/SoC/RAM/OS/补丁、厂商电池策略、存储、供电与环境条件；建立逐设备报告模板，禁止互相替代结果。
-- [ ] 1.3 模型已定为 `openEuler/sherpa-onnx-asr`（Hugging Face，schema-v3 IB-Robot bundle，上游 sherpa-onnx `sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-int8-2026-06-05`，Apache-2.0）。固定 Android CPU 路线四工件：`artifacts/encoder/encoder.int8.onnx`(155,278,641B)、`artifacts/decoder/decoder.onnx`(11,309,084B)、`artifacts/joiner/joiner.int8.onnx`(2,581,422B)、`artifacts/tokens/tokens.txt`(59,240B)，记录 revision `sherpa-onnx-asr@bundle-v1`、各文件 SHA-256 与来源链接；作者发布物与本项目实测分开标识。同仓库 `encoder_ascend/*.om`(460,705,033B) 为 Ascend NPU 专用，Android 不使用。
+- [ ] 1.3 当前已固定的对比基线为 `openEuler/sherpa-onnx-asr`（Hugging Face，schema-v3 IB-Robot bundle，上游 sherpa-onnx `sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-int8-2026-06-05`，Apache-2.0）。固定 Android CPU 路线四工件：`artifacts/encoder/encoder.int8.onnx`(155,278,641B)、`artifacts/decoder/decoder.onnx`(11,309,084B)、`artifacts/joiner/joiner.int8.onnx`(2,581,422B)、`artifacts/tokens/tokens.txt`(59,240B)，记录 revision `sherpa-onnx-asr@bundle-v1`、各文件 SHA-256 与来源链接；作者发布物与本项目实测分开标识。同仓库 `encoder_ascend/*.om`(460,705,033B) 为 Ascend NPU 专用，Android 不使用。
 - [ ] 1.4 在任务 1.5 和任何模型 go/no-go 之前冻结完整评测协议：固定中文清晰、中英混合、噪声、口音、静音/停顿及长会话数据的可复现 manifest、来源/许可、样本与参考转写哈希，固定 CER/WER 评分器版本、文本规范化、计时方法和执行命令并分开试点集与最终验收集；建立仅用于评测的最小基准驱动器并运行冻结试点形成分布报告，预注册逐设备/类别最低可接受准确率所对应的 CER/WER 上限，同时冻结队列容量、资源、长测和指定崩溃尾部损失预算。速度基线固定为每台设备持续 `RTF < 1`（实时必要非充分条件）及正常目标 p95 ASR 落后 ≤15 秒，不得为速度放宽准确率门槛。
 - [ ] 1.5 验证任务 1.3 固定的实际工件在 sherpa-onnx Android 运行时的加载、流式事件、时间戳和中英混合能力；记录转换产物（若有）与作者发布物的区别，不将加载成功视为质量或性能通过。
 - [ ] 1.6 验证麦克风类型前台服务从可见界面启动、后台继续、通知展示和进程恢复；记录 Android 版本差异，覆盖权限拒绝/撤销和麦克风占用。
@@ -13,6 +13,7 @@
 - [ ] 1.9 在参考设备（当前 NX712J 一台；第二台低配设备 1.2 仍待固定）执行 30 分钟可行性尖刺，记录 RTF、Partial/FINAL 落后、CER/WER、内存、温度、功耗、队列和失败样例；按任务 1.4 的预注册门槛作模型继续/调整/no-go 决策，明确该尖刺不替代两小时发布长测。作者已发布 torch_cpu 参考：clean CER 6.8%、noisy 8.4%、RTF 0.408（43 句×8 人×清洁/10dB 噪声=684 句，`recognize_file`），项目实测必须独立复测，不得引用该数值充当本项目结果。
 - [ ] 1.10 建立 drift schema、迁移测试与文件/数据库可恢复提交协议；定义全部实体、稳定 ID、UTC 创建/封存时间、会话单调采集时钟和实际内容 offset 的映射，验证暂停、继续和跨块引用。
 - [ ] 1.11 评审工件溯源、预注册门槛和尖刺结果；若 X-ASR、AAC、Media3 或采集关键假设不成立，先更新 design/spec 与相应任务，再进入完整实现，不静默换远端 ASR 或第二识别模型。
+- [ ] 1.12 筛选比任务 1.3 固定 X-ASR 基线高一档的实际候选（型号待定），记录选择依据、来源/许可与 Android CPU 兼容性；固定精确工件、revision、SHA-256、转换链及配置后，按任务 1.4 同一冻结协议在双参考设备实际对比原四工件，保留完整失败样例和原基线，依据准确率、RTF、延迟、内存、热稳定及功耗实测决定保留/替换；不得降低准确率门、持续 `RTF < 1` 或 p95 落后 ≤15 秒预算，不以可选项代替试验，不引入运行时双模型。
 
 ## 2. 会话、录音与模型管理
 
@@ -23,9 +24,11 @@
 - [x] 2.5 实现 AAC 目标 192kbps 编码、默认 60 秒自动分块、暂停/结束封块和校验和；实现编码能力探测、实际参数持久化与偏差诊断，禁止虚标 192kbps。
 - [x] 2.6 实现版本化 ASR 模型清单、默认 HTTPS 下载、内置受信公钥签名验证、签名代数防回滚、手动导入、断点续传、SHA-256、原子安装和精确 revision/工件哈希记录；重定向逐跳校验，跨域重定向不得转发 `Authorization`。
 - [x] 2.7 实现模型运行时/ABI 兼容检查、更新、回滚和删除租约：活动会话及重识别固定并租用相同模型版本；使用中的删除请求转为 `pending-delete`，租约释放后才清理，不得使当前会话或重识别断供。
-- [ ] 2.8 实现无模型、模型损坏和初始化失败时的“仅录音/重装/回滚”显式选择，既有音频、文字和 GAP 证据保持可访问。
+- [ ] 2.8 实现无模型、模型损坏和初始化失败时的“仅录音/重装/回滚”显式选择；准备与失败状态在设置可查，顶部未就绪不得假启动，必要错误/仅录音确认放在中间 ASR 结果区外，既有音频、文字和 GAP 证据保持可访问。
 - [x] 2.9 实现容量预警、正常封存空间预留、硬下限封块暂停和恢复后等待用户明确继续；验证不自动删除旧音频。
 - [x] 2.10 编写录音生命周期、三时间域、暂停间隙、块序号和原子占位故障点测试；覆盖占位冲突/失败、编码器/muxer 失败、SEALING/SEAL_FAILED/RECOVERABLE/CORRUPT、权限、麦克风占用、低存储、模型签名/代数回滚/租约/pending-delete 和回滚，验证失败状态不冒充正常保存。
+- [ ] 2.11 实现应用打开立即异步预加载已选模型，设置可查缺失/准备中/就绪/失败；顶部唯一录音控制门控真实就绪状态，禁止等待点击开始才加载或静默仅录音。
+- [ ] 2.12 实现同模型工件/安装版本/配置的进程内权重复用，开始、新会话、暂停/继续不卸载；隔离会话与重识别 stream、缓存、端点、时间和事件世代。覆盖加载次数、暂停继续、新会话无串流及迟到事件测试；显式切换、资源回收、故障及重启可重建，原因、实例世代和准备/失败状态在设置可观察，仍遵守会话固定模型与租约。
 
 ## 3. 本地 ASR、缺口与实时数据流
 
@@ -49,7 +52,7 @@
 - [ ] 3A.2 接线 `PcmDispatcher` → `SherpaOnnxEngine`：录音管线注册 `AsrSink` 消费者，真实 16kHz PCM 驱动识别；验证 `ReflectiveSherpaRuntime` 在真机加载 four-artifact 布局（`SherpaModelLayout` 已匹配），失败必须显式报错不静默降级。
 - [ ] 3A.3 原生新增 `com.echofold.app/asr_events` EventChannel：把 `AsrEventJson.toMap()` 的 Partial/FinalCandidate/Final/Health/GAP 事件投递到 Flutter，与 `AsrEventBridge`（去重、世代门控）对接。
 - [ ] 3A.4 实现 `TranscriptController`：消费 `AsrEventBridge` 事件流，维护 `TranscriptUiState`（活跃 Partial 行、FINAL 不可变段、GAP 居中 `...`、asrLagMs），与 `TranscriptSegment`/版本存储打通；换会话清空、进程重建按既有事件 ID 恢复。
-- [ ] 3A.5 录制页中栏替换"本地转写模型尚未接入"占位为 `TranscriptReader`，跟随底部模式最小实现（回到最新按钮可后置到 §5.4）；无模型/初始化失败时显示 §2.8 的显式选择而不是假文字。
+- [ ] 3A.5 录制页中栏替换占位为 `TranscriptReader`，始终只显示真实 ASR 结果，无结果（含空闲/仅录音）留空；不放能力、模式、状态、模型管理或第二开始按钮。跟随底部最小实现（回到最新按钮可后置到 §5.4）；无模型/初始化失败的 §2.8 显式选择位于结果区外，模型管理全部进入设置。
 - [ ] 3A.6 真机验证（缩小版尖刺，作为 1.5/1.9 的首批证据）：录音 60 秒以上，屏幕出现 Partial/Final 文字；记录首字延迟、Partial 更新频率、识别落后、内存；中英混合各试一句；结果写入证据记录，不宣称通过 1.4 预注册门槛。
 - [ ] 3A.7 测试：FakeSherpaRuntime 驱动的管线→事件桥→控制器单元测试（重复/乱序/世代过期、GAP 插入、会话切换清空）；widget 测试覆盖 Partial 行、FINAL 段、GAP 居中与失败态展示。
 
@@ -62,7 +65,7 @@
 - [ ] 4.5 实现左滑达标后的安全封块、旧会话封存、新空闲会话创建和中间页定位；禁止自动开始新录音，封存失败不创建替代会话。
 - [ ] 4.6 实现快速短位移不触发、慢速过阈值触发、空闲不触发、动画反向和封存失败不新建的手势测试。
 - [ ] 4.7 实现录音列表的日期占位标题、状态、时长、容量、GAP/失败标识和会话入口。
-- [ ] 4.8 实现设置页的折叠延迟、模型、BYOK、存储、导出、隐私和诊断入口；配置变更通知折叠重算但不重置已到期段。
+- [ ] 4.8 实现设置页真实可操作或可调整的折叠延迟、模型、BYOK、存储、导出、隐私和诊断项目及必要值/错误；模型导入、刷新、选择、准备/失败查询、重试、更新/回滚/删除集中于设置。移除需求说明、外观动效介绍、当前模式和不可操作占位；配置变更通知折叠重算但不重置已到期段。
 
 ## 5. 实时阅读、ReaderContext、滚动与动效
 
