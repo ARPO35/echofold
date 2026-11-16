@@ -20,6 +20,14 @@ final class FakeRecordingPlatform implements RecordingPlatform {
   int permissions = 0;
   int settingsOpened = 0;
   Completer<void>? commandGate;
+  bool modelAvailable = false;
+  bool importedModelAvailable = true;
+  Object? modelStatusError;
+  Object? modelImportError;
+  Completer<void>? modelStatusGate;
+  Completer<void>? modelImportGate;
+  int modelStatusReads = 0;
+  int modelImports = 0;
 
   @override
   Stream<Object?> get sessions => sessionEvents.stream;
@@ -55,6 +63,23 @@ final class FakeRecordingPlatform implements RecordingPlatform {
   @override
   Future<Map<Object?, Object?>> invoke(String method, [Map<String, Object?>? arguments]) async {
     switch (method) {
+      case PlatformMethods.modelStatus:
+        modelStatusReads++;
+        await modelStatusGate?.future;
+        if (modelStatusError case final Object error) throw error;
+        return <Object?, Object?>{
+          'available': modelAvailable,
+          'message': modelAvailable ? '本地转写模型已就绪' : '尚未安装本地转写模型',
+        };
+      case PlatformMethods.modelImport:
+        modelImports++;
+        await modelImportGate?.future;
+        if (modelImportError case final Object error) throw error;
+        modelAvailable = importedModelAvailable;
+        return <Object?, Object?>{
+          'available': modelAvailable,
+          'message': modelAvailable ? '本地模型导入完成' : '导入的模型不可用',
+        };
       case PlatformMethods.recordingSnapshot:
         return snapshot;
       case PlatformMethods.requestMicrophone:
@@ -66,6 +91,7 @@ final class FakeRecordingPlatform implements RecordingPlatform {
       case PlatformMethods.startRecording:
         starts++;
         await commandGate?.future;
+        snapshot = <Object?, Object?>{...snapshot, 'onlyRecording': arguments!['onlyRecording']};
         publish('RECORDING', capturedMs: 0);
         return snapshot;
       case PlatformMethods.recordingCommand:

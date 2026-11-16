@@ -27,6 +27,8 @@ class AsrEngineProvider(
     private val deviceAbis: List<String>,
     private val resampler: com.echofold.core.asr.engine.Resampler? = null,
     private val onFinalText: (String) -> Unit = {},
+    /** 每帧解码后同步交付非空且变化的 partial；端点 final 后重新开始去重。 */
+    private val onPartialText: (String) -> Unit = {},
 ) {
     init {
         require(runtimeVersion.isNotBlank()) { "runtimeVersion 不能为空白字符串" }
@@ -76,6 +78,7 @@ class AsrEngineProvider(
                 modelDirectoryResolver = { ref -> if (ref == config.model) directory else null },
                 resampler = resampler,
                 onFinalText = onFinalText,
+                onPartialText = onPartialText,
             )
         try {
             engine.initialize(config)
@@ -97,6 +100,7 @@ class AsrEngineProvider(
             runtimeVersion: String,
             resampler: com.echofold.core.asr.engine.Resampler? = null,
             onFinalText: (String) -> Unit = {},
+            onPartialText: (String) -> Unit = {},
         ): AsrEngineProvider =
             AsrEngineProvider(
                 repository = repository,
@@ -105,6 +109,7 @@ class AsrEngineProvider(
                 deviceAbis = android.os.Build.SUPPORTED_ABIS.toList(),
                 resampler = resampler,
                 onFinalText = onFinalText,
+                onPartialText = onPartialText,
             )
     }
 }

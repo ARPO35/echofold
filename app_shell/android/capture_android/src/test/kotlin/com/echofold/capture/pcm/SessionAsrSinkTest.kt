@@ -18,13 +18,14 @@ class SessionAsrSinkTest {
     private class Engine : AsrEngine {
         val frames = mutableListOf<PcmFrame>()
         var closed = 0
+        var flushed = 0
         var failure: Exception? = null
         override fun initialize(config: AsrConfig) {}
         override fun acceptPcm(frame: PcmFrame) {
             failure?.let { throw it }
             frames += frame
         }
-        override fun flushSegment() {}
+        override fun flushSegment() { flushed++ }
         override fun close() { closed++ }
     }
 
@@ -79,5 +80,35 @@ class SessionAsrSinkTest {
         assertTrue(result is SessionAsrCreation.Unavailable)
         assertEquals("ASR_UNAVAILABLE", (result as SessionAsrCreation.Unavailable).status.code)
         assertEquals("model missing", result.status.message)
+
+    }
+    @Test
+    fun `终止故障后不重放PCM不再冲刷且只报告一次`() {
+        val engine = Engine().apply { failure = AsrEngineException("FINAL过载") }
+        val reported = AtomicInteger()
+        val sink = SessionAsrSink("s", config, engine) { reported.incrementAndGet() }
+        val failure = assertThrows(AsrEngineException::class.java) { sink.accept(frame()) }
+        engine.failure = null
+        assertSame(failure, assertThrows(AsrEngineException::class.java) { sink.accept(frame()) })
+        assertSame(failure, assertThrows(AsrEngineException::class.java) { sink.finishSegment() })
+        assertTrue(engine.frames.isEmpty())
+        assertEquals(0, engine.flushed)
+        assertEquals(1, reported.get())
+        sink.close()
+        sink.close()
+        assertEquals(1, engine.closed)
+    }
+    @Test
+    fun `暂停结束当前语句后可继续且关闭只释放一次`() {
+        val engine = Engine()
+        val sink = SessionAsrSink("s", config, engine)
+        sink.accept(frame())
+        sink.finishSegment()
+        sink.accept(frame())
+        sink.finishSegment()
+        sink.close()
+        sink.close()
+        assertEquals(2, engine.flushed)
+        assertEquals(1, engine.closed)
     }
 }

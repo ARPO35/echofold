@@ -157,4 +157,78 @@ class RecordingPipelineTest {
             }
         }
     }
+
+    @Test fun `暂停和停止必须等待ASR在途PCM且冲刷失败仍封存释放`() {
+        for (stop in listOf(false, true)) {
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val stopped = CountDownLatch(1)
+            val finished = CountDownLatch(1)
+            val accepted = AtomicInteger()
+            val flushed = AtomicInteger()
+            val closed = AtomicInteger()
+            val sealed = AtomicInteger()
+            val reads = AtomicInteger()
+            val commandFailure = AtomicReference<Throwable?>()
+            val asr = object : com.echofold.capture.pcm.LifecycleAsrSink {
+                override fun accept(frame: PcmFrame) {
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    accepted.incrementAndGet()
+                }
+                override fun finishSegment() {
+                    assertEquals(1, accepted.get())
+                    flushed.incrementAndGet()
+                    throw IllegalStateException("FINAL过载")
+                }
+                override fun close() { closed.incrementAndGet() }
+            }
+            val encoder = object : LifecycleEncoderSink {
+                override val capturedMs = 0L
+                override fun start(sampleRate: Int) {}
+                override fun resume() {}
+                override fun accept(frame: PcmFrame) {}
+                override fun pause() { sealed.incrementAndGet() }
+                override fun stop() { sealed.incrementAndGet() }
+            }
+            val source = object : AudioRecordHandle {
+                override val sampleRate = 1000
+                override val channelCount = 1
+                override fun start() {}
+                override fun stop() { stopped.countDown() }
+                override fun release() {}
+                override fun latestTimestampMonoNs(): Long? = null
+                override fun read(destination: ShortArray, offset: Int, length: Int): Int =
+                    if (reads.getAndIncrement() == 0) 10 else 0
+            }
+            val pipeline = DefaultRecordingPipeline("session", AudioRecordConfig(listOf(1000)),
+                object : AudioRecordFactory { override fun create(config: AudioRecordConfig) = source },
+                CaptureLanes(asr, encoder, AmplitudeSampler()))
+            pipeline.start()
+            val command = Thread {
+                try { if (stop) pipeline.stopAndRelease() else pipeline.pause() }
+                catch (error: Throwable) { commandFailure.set(error) }
+                finally { finished.countDown() }
+            }
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                command.start()
+                assertTrue(stopped.await(5, TimeUnit.SECONDS))
+                assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
+                assertEquals(0, flushed.get())
+                release.countDown()
+                assertTrue(finished.await(5, TimeUnit.SECONDS))
+                command.join()
+                assertEquals("FINAL过载", commandFailure.get()?.message)
+                assertEquals(1, flushed.get())
+                assertEquals(1, sealed.get())
+                if (stop) assertEquals(1, closed.get())
+            } finally {
+                release.countDown()
+                if (!stop || command.state == Thread.State.NEW) {
+                    try { pipeline.stopAndRelease() } catch (_: IllegalStateException) { }
+                }
+            }
+        }
+    }
 }

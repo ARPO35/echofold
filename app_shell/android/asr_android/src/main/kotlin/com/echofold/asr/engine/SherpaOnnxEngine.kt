@@ -15,8 +15,8 @@ import java.io.File
  * 契约要点：
  * - 模型目录来自会话固定的 [ModelRef]，并与安装目录内的清单快照交叉核对 `modelId/version/sha256`；
  *   任何缺失或不一致都抛 [AsrEngineException]，**不回退**到其他模型、版本或远端 ASR；
- * - [acceptPcm] 只做 PCM 归一化与必要的重采样，不阻塞采集线程（批量推理由运行时内部完成）；
- * - [flushSegment] 取当前文本、复位流并通过回调交付；[close] 幂等。
+ * - [acceptPcm] 归一化、必要时重采样并送入运行时；非空文本变化时同步交付 partial，端点时冲刷分段；
+ * - [flushSegment] 取当前文本并复位流、清空 partial 去重缓存，再交付非空 final；[close] 幂等。
  *
  * `AsrConfig.enableVad` 由上层队列/静音判定使用；本引擎不为它额外加载 VAD 模型，端点仍由
  * sherpa-onnx 的 endpoint 规则控制（避免引入第二模型路线）。
@@ -26,7 +26,8 @@ class SherpaOnnxEngine(
     private val modelDirectoryResolver: (ModelRef) -> File?,
     private val resampler: Resampler? = null,
     private val onFinalText: (String) -> Unit = {},
-) : AsrEngine {
+    private val onPartialText: (String) -> Unit = {},
+) : AsrEngine, ReusableAsrEngine {
     private val initLock = Any()
 
     @Volatile
@@ -40,6 +41,8 @@ class SherpaOnnxEngine(
 
     @Volatile
     private var lastFinalTextValue: String? = null
+
+    private var lastPartialText: String? = null
 
     override fun initialize(config: AsrConfig) {
         synchronized(initLock) {
@@ -79,6 +82,12 @@ class SherpaOnnxEngine(
         val samples = toModelSamples(frame, active)
         try {
             current.acceptWaveform(samples, active.sampleRate)
+            val text = current.resultText().trim()
+            if (text.isNotEmpty() && text != lastPartialText) {
+                lastPartialText = text
+                onPartialText(text)
+            }
+            if (current.isEndpoint()) flushSegment()
         } catch (e: AsrEngineException) {
             throw e
         } catch (e: Exception) {
@@ -104,6 +113,7 @@ class SherpaOnnxEngine(
         } catch (e: Exception) {
             throw AsrEngineException("复位识别流失败：${e.message ?: e.javaClass.simpleName}", e)
         }
+        lastPartialText = null
         if (text.isNotEmpty()) {
             lastFinalTextValue = text
             onFinalText(text)
@@ -125,6 +135,23 @@ class SherpaOnnxEngine(
                 current.close()
             } catch (e: Exception) {
                 // 释放 native 资源失败没有可恢复动作；不阻断会话清理。
+            }
+        }
+    }
+
+    /** 会话边界重置识别流并清空去重缓存；同一权重可被下一会话复用，不继承旧会话状态。 */
+    override fun resetStream() {
+        synchronized(initLock) {
+            if (closed) throw AsrEngineException("引擎已关闭，不能重置识别流")
+            lastPartialText = null
+            lastFinalTextValue = null
+            val current = recognizer ?: return
+            try {
+                current.reset()
+            } catch (e: AsrEngineException) {
+                throw e
+            } catch (e: Exception) {
+                throw AsrEngineException("复位识别流失败：${e.message ?: e.javaClass.simpleName}", e)
             }
         }
     }

@@ -49,6 +49,9 @@ interface RecordingPipeline {
     /** 停止并释放全部资源；幂等。 */
     fun stopAndRelease()
 
+    /** 排空 PCM 后冲刷当前识别语句。 */
+    fun flushAsrSegment() {}
+
     /** 注册状态回调；传 null 解除。实现必须允许在 start 之后注册。 */
     fun setStateListener(listener: RecordingPipelineStateListener?) {
         // 默认实现忽略回调，便于测试用最小 fake。
@@ -167,10 +170,19 @@ class DefaultRecordingPipeline(
         dispatch.lastConsumerFailure?.let { throw it }
     }
 
+    override fun flushAsrSegment() {
+        drainAccepted()
+        (lanes.asr as? com.echofold.capture.pcm.LifecycleAsrSink)?.finishSegment()
+    }
+
     override fun pause() {
         freeze()
         drainAccepted()
-        synchronized(encoderControl) { lifecycle?.pause() }
+        try {
+            (lanes.asr as? com.echofold.capture.pcm.LifecycleAsrSink)?.finishSegment()
+        } finally {
+            synchronized(encoderControl) { lifecycle?.pause() }
+        }
         // 读取/背压失败仍保存全部已接受 PCM，但命令不能冒充正常暂停。
         failure?.let { throw it }
     }
@@ -192,16 +204,23 @@ class DefaultRecordingPipeline(
         try {
             freeze()
             drainAccepted()
-            synchronized(encoderControl) { lifecycle?.stop() }
+            try {
+                (lanes.asr as? com.echofold.capture.pcm.LifecycleAsrSink)?.finishSegment()
+            } finally {
+                synchronized(encoderControl) { lifecycle?.stop() }
+            }
             // 已保存的是故障切点前的证据，仍返回原始采集失败并保留会话。
             failure?.let { throw it }
         } finally {
             running = false
             captureThread?.join()
             consumers.forEach { it.join() }
-            (lanes.asr as? com.echofold.capture.pcm.SessionAsrSink)?.close()
-            source?.close()
-            source = null
+            try {
+                (lanes.asr as? com.echofold.capture.pcm.LifecycleAsrSink)?.close()
+            } finally {
+                source?.close()
+                source = null
+            }
         }
     }
 

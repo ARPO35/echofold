@@ -1,4 +1,4 @@
-/// 仅编排录音采集；所有会话状态都由原生快照确认。
+/// 编排录音与本地转写；所有会话状态都由原生快照确认。
 library;
 
 import 'dart:async';
@@ -31,7 +31,55 @@ final class RecordingController extends ChangeNotifier {
   bool _disposed = false;
   bool _permanentlyDenied = false;
   bool _pcmDispatching = false;
+  bool _onlyRecording = true;
+  bool _refreshingModel = false;
+  String modelMessage = '尚未读取本地模型状态';
+  bool modelAvailable = false;
 
+  Future<void> refreshModel() async {
+    if (_disposed || _refreshingModel || _pending) return;
+    _refreshingModel = true;
+    _emit();
+    try {
+      final result = await _platform.invoke(PlatformMethods.modelStatus);
+      if (_disposed) return;
+      _applyModel(result);
+    } catch (error) {
+      if (_disposed) return;
+      modelAvailable = false;
+      final String detail = error is PlatformException
+          ? error.message ?? error.code : '请重试读取本地模型状态';
+      modelMessage = '模型状态读取失败：$detail。仍可选择仅录音。';
+    } finally {
+      _refreshingModel = false;
+      _emit();
+    }
+  }
+
+  bool get canImportModel => !busy && !_disposed && _snapshot.canStart;
+
+  Future<void> importModel() async {
+    if (!canImportModel) return;
+    await _perform(() async {
+      try {
+        final result = await _platform.invoke(PlatformMethods.modelImport);
+        if (!_disposed) _applyModel(result);
+      } on PlatformException catch (error) {
+        // 关闭系统目录选择器是正常取消，保留已确认的模型状态。
+        if (error.code != 'IMPORT_CANCELLED') rethrow;
+      }
+    });
+  }
+
+  void _applyModel(Map<Object?, Object?> result) {
+    if (result['available'] is! bool || result['message'] is! String) {
+      throw PlatformException(code: 'MODEL_STATUS_INVALID', message: '模型服务返回了无效状态');
+    }
+    modelAvailable = result['available']! as bool;
+    modelMessage = result['message']! as String;
+  }
+
+  bool get onlyRecording => _onlyRecording;
   bool get waveformFrozen => _snapshot.waveformFrozen || !_pcmDispatching || !_connected;
 
   bool get ready => _ready && !_disposed;
@@ -40,13 +88,15 @@ final class RecordingController extends ChangeNotifier {
   bool get recoveryRequired =>
       _failure?.code == 'RECORDING_RECOVERY_REQUIRED' ||
       _snapshot.failure?.code == 'RECORDING_RECOVERY_REQUIRED';
-  bool get busy => _pending || _connecting;
+  bool get busy => _pending || _connecting || _refreshingModel;
   bool get canStart => ready && connected && !busy && _snapshot.canStart;
   bool get canPause => ready && connected && !busy && _snapshot.canPause;
   bool get canResume => ready && connected && !busy && _snapshot.canResume;
   bool get canStop => ready && connected && !busy && !recoveryRequired &&
       (_snapshot.canStop ||
           (_snapshot.state == SessionState.failed && _snapshot.sessionId != null));
+
+  bool get modelReady => modelAvailable;
 
   RecordingUiState get state => RecordingUiState(
         state: _snapshot.state,
@@ -113,8 +163,16 @@ final class RecordingController extends ChangeNotifier {
     _ready = true;
   }
 
+  /// 模型可用时直接启动本地转写，不自动降级为仅录音。
+  Future<void> start() async {
+    if (!modelReady) return;
+    await _start(onlyRecording: false);
+  }
+
   /// 只由用户在确认弹窗明确选择“仅录音”后调用。
-  Future<void> startOnlyRecording() async {
+  Future<void> startOnlyRecording() => _start(onlyRecording: true);
+
+  Future<void> _start({required bool onlyRecording}) async {
     if (!canStart) return;
     await _perform(() async {
       final Map<Object?, Object?> permission =
@@ -132,7 +190,7 @@ final class RecordingController extends ChangeNotifier {
       _permanentlyDenied = false;
       final Map<Object?, Object?> result = await _platform.invoke(
         PlatformMethods.startRecording,
-        <String, Object?>{'commandId': const Uuid().v4(), 'onlyRecording': true},
+        <String, Object?>{'commandId': const Uuid().v4(), 'onlyRecording': onlyRecording},
       );
       if (!_disposed) _applySnapshot(result);
     });
@@ -167,6 +225,7 @@ final class RecordingController extends ChangeNotifier {
     try {
       await action();
     } catch (error) {
+      if (_disposed) return;
       final AppFailure failure = _describe(error);
       // 命令失败后仍读取实际状态，尤其不能把封存失败当成空闲。
       try {
@@ -174,6 +233,7 @@ final class RecordingController extends ChangeNotifier {
       } catch (_) {
         // 保留最后确认的会话，并展示最初的操作失败。
       }
+      if (_disposed) return;
       _failure = failure;
     } finally {
       _pending = false;
@@ -203,13 +263,14 @@ final class RecordingController extends ChangeNotifier {
     if (sequence is! int || sequence < 0 || captured is! int || captured < 0 ||
         (id != null && (id is! String || id.isEmpty)) || status is! String ||
         (dispatch != 'BLOCKED' && dispatch != 'DISPATCHING') ||
-        map['onlyRecording'] != true ||
+        map['onlyRecording'] is! bool ||
         (map['errorCode'] != null && map['errorCode'] is! String) ||
         (map['errorMessage'] != null && map['errorMessage'] is! String)) {
       throw const FormatException('录音快照格式不正确');
     }
     final SessionState next = SessionState.fromWireName(status);
     if (sequence <= _sequence) return;
+    _onlyRecording = map['onlyRecording']! as bool;
     _pcmDispatching = dispatch == 'DISPATCHING';
     final bool newSession = id != _snapshot.sessionId;
     // 原生结束后会保留旧会话最终 capturedMs；它不属于新的空闲录音面。
@@ -290,6 +351,8 @@ final class RecordingController extends ChangeNotifier {
   AppFailure _describe(Object error) {
     if (error is PlatformException) {
       final String message = switch (error.code) {
+        'MODEL_IMPORT_FAILED' || 'IMPORT_BUSY' || 'MODEL_STATUS_INVALID' =>
+          '本地模型导入失败：${error.message ?? error.code}',
         'RECORDING_RECOVERY_REQUIRED' =>
           '当前录音需要恢复，音频文件已保留。此版本尚未提供恢复入口，请保留应用数据，等待恢复功能处理后再开始新录音。',
         PlatformErrorCodes.sealFailed =>

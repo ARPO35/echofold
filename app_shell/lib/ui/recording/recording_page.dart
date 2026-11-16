@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart' show DragStartBehavior;
@@ -46,7 +47,15 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
     WidgetsBinding.instance.addObserver(this);
     widget.controller.addListener(_changed);
     _transcript.setSession(widget.controller.state.sessionId);
-    widget.controller.connect();
+    unawaited(_connectAndRefreshModel());
+  }
+
+  /// 连接成功后立即异步预读模型状态：打开应用即触发，不等用户点击。
+  Future<void> _connectAndRefreshModel() async {
+    final RecordingController controller = widget.controller;
+    await controller.connect();
+    if (!mounted || controller != widget.controller || !controller.connected) return;
+    unawaited(controller.refreshModel());
   }
 
   @override
@@ -55,7 +64,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_changed);
       widget.controller.addListener(_changed);
-      widget.controller.connect();
+      unawaited(_connectAndRefreshModel());
       _transcript.setSession(widget.controller.state.sessionId);
     }
   }
@@ -71,7 +80,9 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) widget.controller.connect();
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_connectAndRefreshModel());
+    }
   }
 
   void _changed() {
@@ -105,28 +116,62 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
     super.dispose();
   }
 
+  Future<void> _importModel() async {
+    if (_confirming || !widget.controller.canImportModel) return;
+    final RecordingController controller = widget.controller;
+    setState(() => _confirming = true);
+    try {
+      final confirmed = await showEchoDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('导入本地模型'),
+          content: const Text('请选择包含 artifacts/ 的 X-ASR 模型根目录。固定四文件共约 169 MB，导入另需约 510 MB 暂存空间。校验大小与 SHA-256，源目录保持不变。此导入由你确认，未经发布者签名。'),
+          actions: <Widget>[
+            EchoPress(child: TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消'))),
+            EchoPress(child: FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('确认并选择目录'))),
+          ],
+        ),
+      );
+      if (confirmed == true && mounted && controller == widget.controller) {
+        await controller.importModel();
+      }
+    } finally {
+      if (mounted) setState(() => _confirming = false);
+    }
+  }
+
   Future<void> _start() async {
     if (_confirming || !widget.controller.canStart) return;
+    if (widget.controller.modelReady) {
+      await widget.controller.start();
+      return;
+    }
+    final RecordingController controller = widget.controller;
     setState(() => _confirming = true);
-    final bool? confirmed = await showEchoDialog<bool>(
-      context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Text('仅录音'),
-        content: const Text('当前不使用转写模型。开始后只采集并保存音频。'),
-        actions: <Widget>[
-          EchoPress(child: TextButton(
-            onPressed: () => Navigator.pop(context, false), child: const Text('取消'),
-          )),
-          EchoPress(child: FilledButton.icon(
-            onPressed: () => Navigator.pop(context, true),
-            icon: const Icon(Icons.mic),
-            label: const Text('开始仅录音'),
-          )),
-        ],
-      ),
-    );
-    if (mounted) setState(() => _confirming = false);
-    if (confirmed == true && mounted) await widget.controller.startOnlyRecording();
+    try {
+      final bool? confirmed = await showEchoDialog<bool>(
+        context: context,
+        builder: (BuildContext context) => AlertDialog(
+          title: const Text('仅录音'),
+          content: const Text('本地转写模型尚不可用。开始后只采集并保存音频，不生成转写。'),
+          actions: <Widget>[
+            EchoPress(child: TextButton(
+              onPressed: () => Navigator.pop(context, false), child: const Text('取消'),
+            )),
+            EchoPress(child: FilledButton.icon(
+              onPressed: () => Navigator.pop(context, true),
+              icon: const Icon(Icons.mic),
+              label: const Text('开始仅录音'),
+            )),
+          ],
+        ),
+      );
+      if (confirmed == true && mounted && controller == widget.controller) {
+        await controller.startOnlyRecording();
+      }
+    } finally {
+      if (mounted) setState(() => _confirming = false);
+    }
   }
 
   Future<void> _mainAction() async {
@@ -172,7 +217,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
 
   String _statusLabel(RecordingUiState state) => switch (state.state) {
         SessionState.idle => '准备录音',
-        SessionState.recording => '正在录音',
+        SessionState.recording => widget.controller.onlyRecording ? '正在录音' : '正在录音与转写',
         SessionState.paused => '已暂停',
         SessionState.stopping => '正在保存',
         SessionState.lowStoragePaused => '存储不足，录音已暂停',
@@ -266,23 +311,54 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
     );
   }
 
+  Widget _sessionActions(RecordingUiState state) {
+    final RecordingController controller = widget.controller;
+    final bool failedToSave = state.state == SessionState.failed && state.sessionId != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        EchoPress(child: OutlinedButton.icon(
+          key: const Key('recording-stop-button'),
+          onPressed: controller.canStop ? controller.stop : null,
+          icon: const Icon(Icons.stop_rounded),
+          label: Text(controller.recoveryRequired ? '录音待恢复' : failedToSave ? '重试保存' : '结束并保存'),
+        )),
+        _errorPanel(state),
+      ],
+    );
+  }
+
+  /// 中央底部会话动作：有会话（含失败重试）时显示，纯空闲且无错误时不显示。
+  bool get _showSessionActions {
+    final RecordingUiState state = widget.controller.state;
+    if (state.sessionId != null) return true;
+    return state.state != SessionState.idle ||
+        widget.controller.state.failure != null ||
+        state.storageWarning != null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final RecordingController controller = widget.controller;
     final RecordingUiState state = controller.state;
     final bool canStop = controller.canStop;
     final bool canMain = !_confirming && (controller.canStart || controller.canPause || controller.canResume);
-    final bool failedToSave = state.state == SessionState.failed && state.sessionId != null;
+    final bool hasSession = state.sessionId != null;
     final ColorScheme colors = Theme.of(context).colorScheme;
     final TextTheme text = Theme.of(context).textTheme;
     final EchoMotion motion = EchoMotion.of(context);
     final double phase = state.state == SessionState.recording ? 1 : state.state == SessionState.paused ? 2 : 0;
+    final String startLabel = controller.modelReady ? '开始录音与转写' : '开始仅录音';
+    final String modeLabel = state.sessionId != null
+        ? controller.onlyRecording ? '仅录音' : '录音与本地转写'
+        : controller.modelReady ? '录音与本地转写' : '仅录音（开始前需确认）';
     final String actionLabel = state.state == SessionState.recording
         ? '暂停录音；向左拖动结束并保存'
         : state.state == SessionState.paused
-            ? '继续录音；向左拖动结束并保存' : '开始仅录音';
+            ? '继续录音；向左拖动结束并保存' : startLabel;
     final String hint = canStop ? '向左拖动按钮，结束并保存'
-        : state.state == SessionState.idle ? '点击按钮开始仅录音'
+        : state.state == SessionState.idle ? '点击按钮$startLabel'
         : controller.busy ? '正在确认录音状态…' : '请先处理下方提示';
 
     final List<Widget> pages = <Widget>[
@@ -296,7 +372,7 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
           const SizedBox(height: 12),
           Text('${_statusLabel(state)} · ${_duration(state.elapsedMs)}', style: text.titleLarge),
           const SizedBox(height: 12),
-          Text('仅录音 · 音频保存在此设备', style: text.bodyLarge),
+          Text('$modeLabel · 音频保存在此设备', style: text.bodyLarge),
         ] else
           Text('当前没有进行中的录音', style: text.titleLarge),
         const SizedBox(height: 32),
@@ -308,71 +384,55 @@ class _RecordingPageState extends State<RecordingPage> with SingleTickerProvider
         listenable: _transcript,
         builder: (context, child) {
           final transcript = _transcript.transcript;
-          if (transcript.segments.isNotEmpty || transcript.livePartialText != null) {
-            return TranscriptReader(controller: _transcript);
+          if (transcript.segments.isNotEmpty || transcript.livePartialText != null || transcript.failure != null) {
+            return Column(children: <Widget>[
+              Expanded(child: TranscriptReader(controller: _transcript)),
+              if (hasSession) ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.3),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+                  child: _sessionActions(state),
+                ),
+              ),
+            ]);
           }
           return child!;
         },
-        child: _readingPage(key: const PageStorageKey<String>('recording-transcript-scroll'), children: <Widget>[
-        Text('只录下此刻，\n安心留在设备。', style: text.headlineLarge?.copyWith(height: 1.5)),
-        const SizedBox(height: 28),
-        Text('本地转写模型不可用', style: text.titleLarge),
-        const SizedBox(height: 12),
-        Text('当前尚未接入本地转写模型。你可以选择仅录音；已有数据不会因此删除，但历史浏览入口尚未接入。',
-            style: text.bodyLarge?.copyWith(height: 1.8, color: colors.onSurfaceVariant)),
-        const SizedBox(height: 16),
-        Wrap(spacing: 8, runSpacing: 8, children: <Widget>[
-          FilledButton.icon(
-            key: const Key('model-only-recording'),
-            onPressed: controller.canStart ? _start : null,
-            icon: const Icon(Icons.mic),
-            label: const Text('仅录音'),
-          ),
-          OutlinedButton.icon(
-            key: const Key('model-reinstall-unavailable'),
-            onPressed: null,
-            icon: const Icon(Icons.download_outlined),
-            label: const Text('重新安装（暂不可用）'),
-          ),
-          OutlinedButton.icon(
-            key: const Key('model-rollback-unavailable'),
-            onPressed: null,
-            icon: const Icon(Icons.undo),
-            label: const Text('回滚（暂不可用）'),
-          ),
-        ]),
-        const SizedBox(height: 24),
-        const Text('转写内容尚不可用；录音与 GAP 等已有证据不会因模型不可用而删除。'),
-        const SizedBox(height: 24),
-        EchoPress(child: OutlinedButton.icon(
-          key: const Key('recording-stop-button'),
-          onPressed: canStop ? controller.stop : null,
-          icon: const Icon(Icons.stop_rounded),
-          label: Text(controller.recoveryRequired ? '录音待恢复' : failedToSave ? '重试保存' : '结束并保存'),
-        )),
-        _errorPanel(state),
-      ])),
+        // 中央仅承载真实 ASR 结果；无结果时留空，仅保留必要会话动作。
+        child: _readingPage(key: const PageStorageKey<String>('recording-transcript-scroll'),
+            children: <Widget>[
+              if (_showSessionActions) _sessionActions(state),
+            ]),
+      ),
       _readingPage(key: const PageStorageKey<String>('recording-settings-scroll'), children: <Widget>[
         Text('设置', style: text.headlineLarge),
         const SizedBox(height: 28),
-        Text('当前模式', style: text.titleMedium),
+        Text('本地转写模型', style: text.titleMedium),
         const SizedBox(height: 8),
-        Text('仅录音', style: text.titleLarge),
-        const SizedBox(height: 8),
-        Text('本地转写模型尚未接入；没有可启用的转写开关。', style: text.bodyLarge),
-        const SizedBox(height: 24),
+        Text(controller.modelMessage, key: const Key('recording-model-status'),
+            style: text.bodyLarge?.copyWith(color: colors.onSurfaceVariant)),
+        const SizedBox(height: 12),
+        Wrap(spacing: 8, runSpacing: 8, children: <Widget>[
+          EchoPress(child: OutlinedButton.icon(
+            key: const Key('model-import'),
+            onPressed: !_confirming && controller.canImportModel ? _importModel : null,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('导入本地模型'),
+          )),
+          EchoPress(child: TextButton.icon(
+            key: const Key('model-refresh'),
+            onPressed: !_confirming && !controller.busy ? controller.refreshModel : null,
+            icon: const Icon(Icons.refresh),
+            label: const Text('刷新模型状态'),
+          )),
+        ]),
+        const SizedBox(height: 28),
         EchoPress(child: OutlinedButton.icon(
           key: const Key('recording-permission-settings'),
           onPressed: controller.busy ? null : controller.openSettings,
           icon: const Icon(Icons.mic_outlined),
           label: const Text('管理系统麦克风权限'),
         )),
-        const SizedBox(height: 28),
-        Text('外观与动效', style: text.titleMedium),
-        const SizedBox(height: 12),
-        Text('Material Design 3 · ${Theme.of(context).brightness == Brightness.dark ? '深色' : '浅色'}主题', style: text.bodyLarge),
-        const SizedBox(height: 8),
-        Text(motion.reduceMotion ? '已遵循系统：减少动态效果' : '动态效果已开启；遵循系统减少动态效果设置', style: text.bodyLarge),
       ]),
     ];
 

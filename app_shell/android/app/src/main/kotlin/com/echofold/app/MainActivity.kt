@@ -12,6 +12,7 @@ import com.echofold.core.asr.AsrEventJson
 import com.echofold.capture.command.RecordingCommandType
 import com.echofold.capture.service.RecordingBridge
 import com.echofold.capture.service.RecordingForegroundService
+import com.echofold.capture.service.SessionAsrRegistry
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -21,8 +22,11 @@ import java.util.UUID
 /** Activity 只桥接命令与权限；麦克风资源由前台服务独立拥有。 */
 class MainActivity : FlutterActivity() {
     private var visible = false
+    private var modelImportResult: MethodChannel.Result? = null
+    private lateinit var models: BuiltinXAsrBundle
     private var permissionResult: MethodChannel.Result? = null
     private var sessionListener: ((Map<String, Any?>) -> Unit)? = null
+    private val commandResults = LinkedHashMap<String, MethodChannel.Result>()
     private var amplitudeListener: ((List<Map<String, Any?>>) -> Unit)? = null
     private val asrHandler = Handler(Looper.getMainLooper())
     private var asrSink: EventChannel.EventSink? = null
@@ -31,6 +35,7 @@ class MainActivity : FlutterActivity() {
             val sink = asrSink ?: return
             try {
                 AsrEvents.buffer.deliver { sink.success(AsrEventJson.toChannelMap(it)) }
+                SessionAsrRegistry.events.retryPending()
             } catch (error: Exception) {
                 asrSink = null
                 sink.error("ASR_DELIVERY_FAILED", "转写事件投递失败", null)
@@ -45,6 +50,10 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        models = BuiltinXAsrBundle(applicationContext)
+        SessionAsrRegistry.register(models.sessionFactory)
+        // 启动预加载：立即异步初始化已选模型，不阻塞界面，不改变 available 判定。
+        models.warmupAsync()
         val messenger = flutterEngine.dartExecutor.binaryMessenger
         EventChannel(messenger, "com.echofold.app/asr_events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
@@ -80,6 +89,25 @@ class MainActivity : FlutterActivity() {
         })
         MethodChannel(messenger, "com.echofold.app/platform").setMethodCallHandler { call, result ->
             when (call.method) {
+                "model.status" -> result.success(models.status())
+                "model.import" -> {
+                    if (modelImportResult != null) result.error("IMPORT_BUSY", "模型导入正在进行", null)
+                    else {
+                        modelImportResult = result
+                        try { launchModelTreePicker() } catch (error: Exception) {
+                            modelImportResult = null
+                            result.error("MODEL_IMPORT_FAILED", "无法打开模型目录：${error.message}", null)
+                        }
+                    }
+                }
+                "model.select" -> try {
+                    val id = call.argument<String>("installationId") ?: error("缺少 installationId")
+                    models.repository.select(id)
+                    // 显式切换模型：重建共享权重，并立即预热新选择；原因在 status() 可查。
+                    models.invalidateEngine("model.select")
+                    models.warmupAsync()
+                    result.success(models.status())
+                } catch (error: Exception) { result.error("MODEL_SELECTION_FAILED", error.message, null) }
                 "recording.snapshot" -> result.success(RecordingBridge.snapshot)
                 "permission.microphone" -> requestMicrophone(result)
                 "app.settings" -> try {
@@ -90,23 +118,27 @@ class MainActivity : FlutterActivity() {
                     val id = call.argument<String>("commandId")
                     val validId = try { id != null && UUID.fromString(id).toString().equals(id, true) } catch (_: IllegalArgumentException) { false }
                     val start = call.method == "recording.start"
+                    val onlyRecording = call.argument<Boolean>("onlyRecording") ?: true
                     val type = if (start) RecordingCommandType.START else
                         RecordingCommandType.entries.firstOrNull { it.name == call.argument<String>("command") && it != RecordingCommandType.START }
                     when {
                         !validId || type == null -> result.error("INVALID_ARGUMENT", "请提供有效 commandId 和录音命令", null)
-                        start && call.argument<Boolean>("onlyRecording") != true -> result.error("ONLY_RECORDING_REQUIRED", "请显式选择仅录音模式", null)
+                        start && !onlyRecording && models.status()["available"] != true -> result.error("MODEL_UNAVAILABLE", "请先安装并选择可用模型，或选择仅录音", models.status())
                         (start || type == RecordingCommandType.RESUME) && !visible -> result.error("FOREGROUND_UNAVAILABLE", "请回到录音页面后操作", null)
                         start && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED -> result.error("MIC_PERMISSION_DENIED", "请先授予麦克风权限", null)
                         else -> {
                             val commandId = checkNotNull(id)
                             val reserved = RecordingBridge.reserve(commandId) { snapshot, code, message ->
+                                commandResults.remove(commandId)
                                 if (code == null) result.success(snapshot) else result.error(code, message, snapshot)
                             }
                             if (reserved) {
+                                commandResults[commandId] = result
                                 try {
                                     val intent = RecordingForegroundService.commandIntent(this, commandId, type,
-                                        if (start) UUID.randomUUID().toString() else null, onlyRecording = start)
-                                    if (start) startForegroundService(intent) else startService(intent)
+                                        if (start) UUID.randomUUID().toString() else null, onlyRecording = onlyRecording)
+                                    val launched = if (start) startForegroundService(intent) else startService(intent)
+                                    check(launched != null) { "系统未启动录音服务" }
                                 } catch (error: Exception) {
                                     RecordingBridge.complete(commandId, "FOREGROUND_UNAVAILABLE", "无法发送录音命令：${error.message}")
                                 }
@@ -118,6 +150,43 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != MODEL_TREE_REQUEST) return
+        val pending = modelImportResult ?: return
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            modelImportResult = null
+            pending.error("IMPORT_CANCELLED", "已取消模型导入", null)
+            return
+        }
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            models.importBundleTreeAsync(uri) { imported ->
+                if (modelImportResult !== pending) return@importBundleTreeAsync
+                modelImportResult = null
+                imported.fold(
+                    onSuccess = { model ->
+                        // 导入完成即预热新选择的模型，下一次实时转写无需再等加载。
+                        models.warmupAsync()
+                        pending.success(models.status().plus("importedInstallationId" to model.installationId))
+                    },
+                    onFailure = { error -> pending.error("MODEL_IMPORT_FAILED", error.message ?: "模型导入失败", models.status()) },
+                )
+            }
+        } catch (error: Exception) {
+            modelImportResult = null
+            pending.error("MODEL_IMPORT_FAILED", error.message ?: "模型导入失败", models.status())
+        }
+    }
+
+    private fun launchModelTreePicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        startActivityForResult(intent, MODEL_TREE_REQUEST)
+    }
 
     private fun requestMicrophone(result: MethodChannel.Result) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -126,7 +195,10 @@ class MainActivity : FlutterActivity() {
         if (!visible) { result.error("FOREGROUND_UNAVAILABLE", "请回到应用后授予麦克风权限", null); return }
         if (permissionResult != null) { result.error("PERMISSION_PENDING", "麦克风权限请求仍在等待系统结果", null); return }
         permissionResult = result
-        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MICROPHONE_REQUEST)
+        try { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MICROPHONE_REQUEST) } catch (error: Exception) {
+            permissionResult = null
+            result.error("PERMISSION_UNAVAILABLE", "无法打开麦克风权限请求：${error.message}", null)
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -145,8 +217,14 @@ class MainActivity : FlutterActivity() {
         if (RecordingBridge.amplitudeListener === amplitudeListener) RecordingBridge.amplitudeListener = null
         permissionResult?.error("ACTIVITY_DESTROYED", "权限页面已重建，请重新请求权限", null)
         permissionResult = null
+        modelImportResult?.error("ACTIVITY_DESTROYED", "模型导入页面已关闭，请重新查看模型状态", null)
+        modelImportResult = null
+        commandResults.keys.toList().forEach { id ->
+            RecordingBridge.cancelPending(id, "ACTIVITY_DESTROYED", "录音页面已重建，请重新获取录音状态")
+        }
+        commandResults.clear()
         super.onDestroy()
     }
 
-    companion object { private const val MICROPHONE_REQUEST = 4712 }
+    companion object { private const val MICROPHONE_REQUEST = 4712; private const val MODEL_TREE_REQUEST = 4713 }
 }

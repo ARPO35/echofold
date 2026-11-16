@@ -14,6 +14,7 @@ import com.echofold.asr.testing.createModelDirectory
 import com.echofold.asr.testing.installedModel
 import com.echofold.asr.testing.testManifest
 import com.echofold.core.asr.engine.AsrEngineException
+import com.echofold.core.asr.engine.PcmFrame
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -61,6 +62,43 @@ class AsrEngineProviderTest {
         assertEquals(1, runtime.createCount)
         assertTrue(runtime.createdPaths!!.encoder.name.startsWith("encoder"))
         engine.close()
+    }
+
+    @Test
+    fun `provider 将 partial 和端点 final 交付给消费者`() {
+        register()
+        val events = mutableListOf<String>()
+        val engine = AsrEngineProvider(
+            repository = repository,
+            runtimeProvider = { runtime },
+            runtimeVersion = "1.10.0",
+            deviceAbis = listOf("arm64-v8a"),
+            onPartialText = { events += "partial:$it" },
+            onFinalText = { events += "final:$it" },
+        ).create(asrConfig(manifest, installationId))
+        val frame = PcmFrame(
+            sessionId = "session-1",
+            frameIndex = 0L,
+            monoNs = 1_000L,
+            capturedStartMs = 0L,
+            sampleRate = 16_000,
+            samples = shortArrayOf(1),
+        )
+        try {
+            runtime.recognizer.endpoint = false
+            runtime.recognizer.text = "你好"
+            engine.acceptPcm(frame)
+            engine.acceptPcm(frame)
+            assertEquals(listOf("partial:你好"), events)
+
+            runtime.recognizer.endpoint = true
+            engine.acceptPcm(frame)
+
+            assertEquals(listOf("partial:你好", "final:你好"), events)
+            assertEquals(1, runtime.recognizer.resetCount)
+        } finally {
+            engine.close()
+        }
     }
 
     @Test

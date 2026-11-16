@@ -44,12 +44,17 @@ object RecordingBridge {
             pending.remove(id)?.invoke(result.snapshot, code, message)
         }
     }
+    /** 页面销毁只终结该页面的回调，不取消服务命令或缓存伪造的命令结果。 */
+    fun cancelPending(id: String, code: String, message: String) {
+        pending.remove(id)?.invoke(snapshot, code, message)
+    }
+
 
     @Synchronized fun publish(sessionId: String?, status: String, blocked: Boolean, capturedMs: Long,
-        code: String? = null, message: String? = null) {
+        onlyRecording: Boolean, code: String? = null, message: String? = null) {
         snapshot = mapOf("sessionId" to sessionId, "status" to status,
             "dispatchState" to if (blocked) "BLOCKED" else "DISPATCHING",
-            "capturedMs" to capturedMs, "onlyRecording" to true,
+            "capturedMs" to capturedMs, "onlyRecording" to if (status == "IDLE") true else onlyRecording,
             "errorCode" to code, "errorMessage" to message, "sequence" to ++sequence)
     }
 

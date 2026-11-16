@@ -169,6 +169,109 @@ class SherpaOnnxEngineTest {
     }
 
     @Test
+    fun `逐帧 partial 只交付非空且变化的文本`() {
+        val partials = mutableListOf<String>()
+        val directory = modelDirectory()
+        val engine = SherpaOnnxEngine(
+            runtime = runtime,
+            modelDirectoryResolver = { directory },
+            onPartialText = { partials += it },
+        )
+        runtime.recognizer.endpoint = false
+        engine.initialize(asrConfig(manifest, installationId))
+
+        for (text in listOf("", "   ", "  你好  ", "你好", "你好世界", "你好世界")) {
+            runtime.recognizer.text = text
+            engine.acceptPcm(frame(shortArrayOf(1)))
+        }
+
+        assertEquals(listOf("你好", "你好世界"), partials)
+        assertEquals(0, runtime.recognizer.resetCount)
+        assertNull(engine.lastFinalText())
+    }
+
+    @Test
+    fun `端点依次交付 partial 与 final 并复位且新段允许相同文本`() {
+        val events = mutableListOf<String>()
+        val directory = modelDirectory()
+        val engine = SherpaOnnxEngine(
+            runtime = runtime,
+            modelDirectoryResolver = { directory },
+            onPartialText = { events += "partial:$it" },
+            onFinalText = {
+                assertEquals(1, runtime.recognizer.resetCount)
+                events += "final:$it"
+            },
+        )
+        engine.initialize(asrConfig(manifest, installationId))
+        runtime.recognizer.text = "  你好  "
+        runtime.recognizer.endpoint = true
+
+        engine.acceptPcm(frame(shortArrayOf(1)))
+
+        assertEquals(listOf("partial:你好", "final:你好"), events)
+        assertEquals("你好", engine.lastFinalText())
+        assertEquals(1, runtime.recognizer.resetCount)
+
+        runtime.recognizer.endpoint = false
+        runtime.recognizer.text = ""
+        engine.acceptPcm(frame(shortArrayOf(1)))
+        runtime.recognizer.text = "你好"
+        engine.acceptPcm(frame(shortArrayOf(1)))
+        engine.acceptPcm(frame(shortArrayOf(1)))
+
+        assertEquals(listOf("partial:你好", "final:你好", "partial:你好"), events)
+        assertEquals(1, runtime.recognizer.resetCount)
+    }
+
+    @Test
+    fun `空端点只复位而不交付 partial 或 final`() {
+        val events = mutableListOf<String>()
+        val directory = modelDirectory()
+        val engine = SherpaOnnxEngine(
+            runtime = runtime,
+            modelDirectoryResolver = { directory },
+            onPartialText = { events += "partial:$it" },
+            onFinalText = { events += "final:$it" },
+        )
+        engine.initialize(asrConfig(manifest, installationId))
+        runtime.recognizer.text = "   "
+        runtime.recognizer.endpoint = true
+
+        engine.acceptPcm(frame(shortArrayOf(1)))
+
+        assertTrue(events.isEmpty())
+        assertEquals(1, runtime.recognizer.resetCount)
+        assertNull(engine.lastFinalText())
+    }
+
+    @Test
+    fun `主动冲刷也清空 partial 去重缓存`() {
+        val partials = mutableListOf<String>()
+        val finals = mutableListOf<String>()
+        val directory = modelDirectory()
+        val engine = SherpaOnnxEngine(
+            runtime = runtime,
+            modelDirectoryResolver = { directory },
+            onPartialText = { partials += it },
+            onFinalText = { finals += it },
+        )
+        engine.initialize(asrConfig(manifest, installationId))
+        runtime.recognizer.endpoint = false
+        runtime.recognizer.text = "你好"
+
+        engine.acceptPcm(frame(shortArrayOf(1)))
+        engine.flushSegment()
+        runtime.recognizer.text = "你好"
+        engine.acceptPcm(frame(shortArrayOf(1)))
+        engine.acceptPcm(frame(shortArrayOf(1)))
+
+        assertEquals(listOf("你好", "你好"), partials)
+        assertEquals(listOf("你好"), finals)
+        assertEquals(1, runtime.recognizer.resetCount)
+    }
+
+    @Test
     fun `冲刷交付文本并复位识别流`() {
         val emitted = mutableListOf<String>()
         runtime.recognizer.text = "  你好世界  "

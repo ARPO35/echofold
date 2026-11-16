@@ -54,6 +54,9 @@ class TrustedKeyRegistry private constructor(
          * @param keys 内置密钥列表（至少一个）
          * @param transitions 可选的旧钥签发过渡声明
          */
+        fun empty(): TrustedKeyRegistry = TrustedKeyRegistry(emptyMap())
+
+        /** 构建注册表。 */
         fun of(keys: List<TrustedKey>, transitions: List<KeyTransitionDeclaration> = emptyList()): TrustedKeyRegistry {
             if (keys.isEmpty()) throw TrustedKeyException("受信密钥列表不能为空")
             val registered = LinkedHashMap<String, TrustedKey>()

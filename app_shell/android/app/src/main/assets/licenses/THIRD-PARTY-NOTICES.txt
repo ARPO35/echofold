@@ -1,0 +1,24 @@
+Third-party runtime notices
+
+sherpa-onnx Android AAR 1.13.6
+Copyright and license: sherpa-onnx project contributors; Apache License 2.0.
+The complete Apache-2.0 license text is in sherpa-onnx-Apache-2.0.txt in this directory.
+Source release: https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.6
+Official asset: https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.6/sherpa-onnx-1.13.6.aar
+The official release API identifies asset 519088878 and SHA-256
+0012d9a28f15bd6fb966b62b70a75da3990512fdccce28b83098248ce4be1698.
+
+Bundled ONNX Runtime
+The AAR includes libonnxruntime.so for arm64-v8a, armeabi-v7a, x86 and x86_64.
+The embedded arm64 library reports version 1.27.1. The v1.13.6 upstream Android
+build script pins ONNX Runtime 1.27.1 for its Android builds. ONNX Runtime is
+distributed under the MIT License; its license text is in onnxruntime-MIT.txt.
+
+Scope and limitation
+These notices identify sherpa-onnx and ONNX Runtime, confirmed from the AAR
+and the upstream v1.13.6 Android build script. The AAR has no embedded LICENSE
+or NOTICE files. This is not a complete license audit of every native or
+transitive component, compiler runtime, or attribution bundled in the binary.
+No claim is made that all such components have been enumerated. Review the
+upstream release materials and actual binary distribution before broader
+redistribution.

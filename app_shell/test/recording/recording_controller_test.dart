@@ -5,6 +5,7 @@ import 'package:echofold_app/domain/models.dart';
 import 'package:echofold_app/native/platform_contracts.dart';
 import 'package:echofold_app/ui/recording/recording_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 
 import 'fake_recording_platform.dart';
 
@@ -21,6 +22,131 @@ void main() {
     controller.dispose();
     await platform.dispose();
   });
+
+  test('模型就绪后启动真实转写，快照确认模式且保留暂停保存行为', () async {
+    platform.modelAvailable = true;
+    await controller.refreshModel();
+    await controller.start();
+    expect(controller.state.state, SessionState.recording);
+    expect(controller.onlyRecording, isFalse);
+    expect(platform.snapshot['onlyRecording'], isFalse);
+    platform.amplitude(1, 1200);
+    platform.publish('RECORDING', capturedMs: 1200);
+    await controller.pause();
+    expect(controller.state.state, SessionState.paused);
+    expect(controller.state.amplitudes, hasLength(1));
+    await controller.resume();
+    expect(controller.state.state, SessionState.recording);
+    await controller.stop();
+    expect(controller.state.state, SessionState.idle);
+    expect(controller.state.elapsedMs, 0);
+    expect(controller.state.amplitudes, isEmpty);
+  });
+
+  test('没有可用模型时不隐式降级为仅录音', () async {
+    await controller.refreshModel();
+    await controller.start();
+    expect(platform.permissions, 0);
+    expect(controller.state.state, SessionState.idle);
+    await controller.startOnlyRecording();
+    expect(controller.state.state, SessionState.recording);
+    expect(controller.onlyRecording, isTrue);
+    expect(platform.snapshot['onlyRecording'], isTrue);
+  });
+  test('模型状态读取失败可见，重试后恢复可用状态', () async {
+    platform.modelStatusError = PlatformException(code: 'STATUS_FAILED', message: '无法读取模型目录');
+    await controller.refreshModel();
+    expect(controller.modelReady, isFalse);
+    expect(controller.modelMessage, contains('无法读取模型目录'));
+    platform.modelStatusError = null;
+    platform.modelAvailable = true;
+    await controller.refreshModel();
+    expect(controller.modelReady, isTrue);
+    expect(controller.modelMessage, '本地转写模型已就绪');
+  });
+
+  test('导入等待期间禁止重复导入与开始，成功后恢复操作', () async {
+    final Completer<void> gate = Completer<void>();
+    platform.modelImportGate = gate;
+    final Future<void> importing = controller.importModel();
+    expect(controller.busy, isTrue);
+    expect(controller.state.isDispatching, isTrue);
+    expect(controller.canStart, isFalse);
+    await controller.importModel();
+    await controller.startOnlyRecording();
+    expect(platform.modelImports, 1);
+    expect(platform.starts, 0);
+    gate.complete();
+    await importing;
+    expect(controller.busy, isFalse);
+    expect(controller.modelReady, isTrue);
+    expect(controller.state.failure, isNull);
+    await controller.start();
+    expect(controller.state.state, SessionState.recording);
+    expect(controller.onlyRecording, isFalse);
+  });
+
+  test('取消导入保留已知模型且不显示失败，导入失败可见并允许重试', () async {
+    platform.modelAvailable = true;
+    await controller.refreshModel();
+    final String previous = controller.modelMessage;
+    platform.modelImportError = PlatformException(code: 'IMPORT_CANCELLED');
+    await controller.importModel();
+    expect(controller.busy, isFalse);
+    expect(controller.modelReady, isTrue);
+    expect(controller.modelMessage, previous);
+    expect(controller.state.failure, isNull);
+    platform.modelImportError = PlatformException(code: 'MODEL_IMPORT_FAILED', message: '模型校验失败');
+    await controller.importModel();
+    expect(controller.state.failure!.message, contains('模型校验失败'));
+    expect(controller.modelReady, isTrue);
+    expect(controller.busy, isFalse);
+    platform.modelImportError = null;
+    await controller.importModel();
+    expect(controller.state.failure, isNull);
+    expect(controller.modelReady, isTrue);
+  });
+
+  test('模型状态读取期间不能开始或导入，重复刷新不覆盖状态', () async {
+    final Completer<void> gate = Completer<void>();
+    platform.modelStatusGate = gate;
+    final Future<void> refreshing = controller.refreshModel();
+    expect(controller.canStart, isFalse);
+    expect(controller.canImportModel, isFalse);
+    await controller.refreshModel();
+    await controller.importModel();
+    expect(platform.modelStatusReads, 1);
+    expect(platform.modelImports, 0);
+    gate.complete();
+    await refreshing;
+    expect(controller.canStart, isTrue);
+    expect(controller.canImportModel, isTrue);
+  });
+
+  test('销毁后模型刷新和导入的异步结果不再通知或读取会话', () async {
+    for (final bool importing in <bool>[false, true]) {
+      final FakeRecordingPlatform boundary = FakeRecordingPlatform();
+      final RecordingController disposed = RecordingController(platform: boundary);
+      final Completer<void> gate = Completer<void>();
+      if (importing) {
+        boundary.modelImportGate = gate;
+        boundary.modelImportError = PlatformException(code: 'MODEL_IMPORT_FAILED');
+      } else {
+        boundary.modelStatusGate = gate;
+        boundary.modelStatusError = PlatformException(code: 'STATUS_FAILED');
+      }
+      int notifications = 0;
+      disposed.addListener(() => notifications++);
+      final Future<void> pending = importing ? disposed.importModel() : disposed.refreshModel();
+      disposed.dispose();
+      final int before = notifications;
+      gate.complete();
+      await pending;
+      expect(notifications, before);
+      await boundary.dispose();
+    }
+  });
+
 
   test('权限拒绝不开始录音，永久拒绝可前往设置', () async {
     platform.granted = false;

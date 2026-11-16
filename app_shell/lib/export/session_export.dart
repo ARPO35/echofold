@@ -28,31 +28,47 @@ final class SessionExportSnapshot {
   final Map<String, List<TranscriptVersion>> versionsBySegment;
   final Map<String, List<SemanticArtifact>> artifactsBySegment;
 
+  /// 导出只接纳当前会话及当前段的证据，避免混合查询泄漏其他会话。
+  TitlePresentation? get sessionTitle =>
+      title?.sessionId == session.id ? title : null;
+
+  Iterable<AudioChunkRecord> get sessionChunks =>
+      chunks.where((AudioChunkRecord chunk) => chunk.sessionId == session.id);
+
+  Iterable<FinalSource> get sessionFinals =>
+      finals.where((FinalSource source) => source.sessionId == session.id);
+
   List<TranscriptVersion> versionsOf(String segmentId) =>
-      versionsBySegment[segmentId] ?? const <TranscriptVersion>[];
+      (versionsBySegment[segmentId] ?? const <TranscriptVersion>[])
+          .where((TranscriptVersion version) => version.segmentId == segmentId)
+          .toList(growable: false);
 
   List<SemanticArtifact> artifactsOf(String segmentId) =>
-      artifactsBySegment[segmentId] ?? const <SemanticArtifact>[];
+      (artifactsBySegment[segmentId] ?? const <SemanticArtifact>[])
+          .where((SemanticArtifact artifact) =>
+              artifact.sessionId == session.id && artifact.segmentId == segmentId)
+          .toList(growable: false);
 }
 
-/// Markdown 导出。
+/// Markdown 导出；标题、转写和语义产物按纯文本转义，内容换行保留为 `<br>`。
 String exportSessionMarkdown(SessionExportSnapshot snapshot) {
   final StringBuffer out = StringBuffer();
-  final String title = snapshot.title?.latestTitle ?? snapshot.session.displayTitle;
+  final String title = snapshot.sessionTitle?.latestTitle ?? snapshot.session.displayTitle;
   out
-    ..writeln('# $title')
+    ..writeln('# ${_markdownText(title)}')
     ..writeln()
     ..writeln('- 会话：`${snapshot.session.id}`')
     ..writeln('- 创建：${formatSessionDate(snapshot.session.createdAtUtcMs)}')
     ..writeln('- 时长：${formatDuration(snapshot.session.durationMs)}')
     ..writeln('- 状态：${snapshot.session.state.wireName}')
-    ..writeln('- 音频块：${snapshot.chunks.length}');
+    ..writeln('- 音频块：${snapshot.sessionChunks.length}');
   if (snapshot.session.gapCount > 0) {
     out.writeln('- ASR 过载缺口：${snapshot.session.gapCount} 处');
   }
   out.writeln();
 
   for (final TranscriptSegment segment in snapshot.segments) {
+    if (segment.sessionId != snapshot.session.id) continue;
     if (segment.isGap) {
       out
         ..writeln('<p align="center">...</p>')
@@ -77,14 +93,14 @@ String exportSessionMarkdown(SessionExportSnapshot snapshot) {
       ..writeln();
     if (defaultVersion != null) {
       out
-        ..writeln('**${_layerLabel(defaultVersion)}**：${defaultVersion.text}')
+        ..writeln('**${_layerLabel(defaultVersion)}**：${_markdownText(defaultVersion.text)}')
         ..writeln();
     }
     for (final TranscriptVersion version in l1) {
-      out.writeln('- L1 ${_originLabel(version)}：${version.text}');
+      out.writeln('- L1 ${_originLabel(version)}：${_markdownText(version.text)}');
     }
     for (final TranscriptVersion version in l2) {
-      out.writeln('- L2 ${_originLabel(version)}：${version.text}');
+      out.writeln('- L2 ${_originLabel(version)}：${_markdownText(version.text)}');
     }
     final List<SemanticArtifact> artifacts = snapshot.artifactsOf(segment.id);
     for (final SemanticArtifact artifact in artifacts) {
@@ -97,7 +113,7 @@ String exportSessionMarkdown(SessionExportSnapshot snapshot) {
       final String state = artifact.state == ArtifactState.ready
           ? ''
           : '（${artifact.state.wireName}）';
-      out.writeln('- $layer$state：${artifact.text}');
+      out.writeln('- $layer$state：${_markdownText(artifact.text)}');
     }
     out.writeln();
     _writeVersions(out, versions, indent: '');
@@ -109,6 +125,7 @@ String exportSessionMarkdown(SessionExportSnapshot snapshot) {
 
 /// 结构化 JSON 导出；保持稳定标识与三时间域映射。
 String exportSessionJson(SessionExportSnapshot snapshot) {
+  final TitlePresentation? title = snapshot.sessionTitle;
   final Map<String, Object?> root = <String, Object?>{
     'schema': 'echofold.export.v1',
     'session': <String, Object?>{
@@ -124,17 +141,17 @@ String exportSessionJson(SessionExportSnapshot snapshot) {
       'installationId': snapshot.session.installationId,
       'asrConfigHash': snapshot.session.asrConfigHash,
     },
-    'titlePresentation': snapshot.title == null
+    'titlePresentation': title == null
         ? null
         : <String, Object?>{
-            'latestTitle': snapshot.title!.latestTitle,
-            'latestVersionId': snapshot.title!.latestVersionId,
-            'pendingFirstReveal': snapshot.title!.pendingFirstReveal,
-            'revealedAtUtcMs': snapshot.title!.revealedAtUtcMs,
-            'sourceVersions': snapshot.title!.sourceSet?.toJson(),
-            'sourceSetHash': snapshot.title!.sourceSet?.hash,
+            'latestTitle': title.latestTitle,
+            'latestVersionId': title.latestVersionId,
+            'pendingFirstReveal': title.pendingFirstReveal,
+            'revealedAtUtcMs': title.revealedAtUtcMs,
+            'sourceVersions': title.sourceSet?.toJson(),
+            'sourceSetHash': title.sourceSet?.hash,
           },
-    'chunks': snapshot.chunks
+    'chunks': snapshot.sessionChunks
         .map(
           (AudioChunkRecord chunk) => <String, Object?>{
             'id': chunk.id,
@@ -154,7 +171,7 @@ String exportSessionJson(SessionExportSnapshot snapshot) {
           },
         )
         .toList(growable: false),
-    'finals': snapshot.finals
+    'finals': snapshot.sessionFinals
         .map(
           (FinalSource source) => <String, Object?>{
             'id': source.id,
@@ -171,6 +188,7 @@ String exportSessionJson(SessionExportSnapshot snapshot) {
         )
         .toList(growable: false),
     'segments': snapshot.segments
+        .where((TranscriptSegment segment) => segment.sessionId == snapshot.session.id)
         .map(
           (TranscriptSegment segment) => <String, Object?>{
             'id': segment.id,
@@ -294,3 +312,16 @@ String _originLabel(TranscriptVersion version) {
 }
 
 String _time(int ms) => formatDuration(ms);
+
+final RegExp _markdownSyntax = RegExp(r'\r\n|[\\`*_{}\[\]()#+\-.!|~&<>\r\n]');
+
+String _markdownText(String text) => text.replaceAllMapped(
+      _markdownSyntax,
+      (Match match) => switch (match[0]!) {
+        '&' => '&amp;',
+        '<' => '&lt;',
+        '>' => '&gt;',
+        '\r\n' || '\r' || '\n' => '<br>',
+        final String character => '\\$character',
+      },
+    );
